@@ -1,0 +1,40 @@
+{
+  "stations": {
+    "P1": { "printer": "Zebra ZD621R P1 ENGR" },
+    "P2": { "printer": "Zebra ZD621R P2 REC" },
+    "P3": { "printer": "Zebra ZD621R P3 EXT" },
+    "P4": { "printer": "Zebra ZD621R P4 GRD" },
+    "P5": { "printer": "Zebra ZD621R P5 BLD" },
+    "P6": { "printer": "Zebra ZD621R P6 PENN" },
+    "P7": { "printer": "Zebra ZD621R P7 SC" },
+    "P8": { "printer": "Zebra ZD621R P8 State" }
+  },
+  "templates": {
+    "RAW": {
+      "P1": "C:\\RFID\\RFID-RAW-P1.btw",
+      "P2": "C:\\RFID\\RFID-RAW-P2.btw",
+      "P3": "C:\\RFID\\RFID-RAW-P3.btw",
+      "P4": "C:\\RFID\\RFID-RAW-P4.btw",
+      "P5": "C:\\RFID\\RFID-RAW-P5.btw",
+      "P8": "C:\\RFID\\RFID-RAW-P8.btw",
+      "P6_PENN": "C:\\RFID\\RFID-RAW-Penn.btw",
+      "P7_SC1": "C:\\RFID\\RFID-RAW-SC1.btw"
+    },
+    "FG": {
+      "P1": "C:\\RFID\\RFID-FG-P1.btw",
+      "P2": "C:\\RFID\\RFID-FG-P2.btw",
+      "P3": "C:\\RFID\\RFID-FG-P3.btw",
+      "P4": "C:\\RFID\\RFID-FG-P4.btw",
+      "P5": "C:\\RFID\\RFID-FG-P5.btw",
+      "P8": "C:\\RFID\\RFID-FG-P8.btw"
+    }
+  },
+  "rules": {
+    "lotPrefixToLabelFamily": {
+      "PL": "FG",
+      "FF": "RAW",
+      "BL": "RAW",
+      "GL": "RAW"
+    }
+  }
+}

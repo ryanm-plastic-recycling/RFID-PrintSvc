@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+clientbundle/node_modules/
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# logs
+logs/
+*.log
+
+# temp/runtime
+tmp/
+temp/
+uploads/
+*.tmp
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# archives
+*.zip
+
+# batch files
+*.bat
