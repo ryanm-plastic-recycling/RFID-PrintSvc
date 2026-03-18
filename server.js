@@ -1,7 +1,50 @@
 require("dotenv").config();
 
-const BUILD_TAG = "2026-03-05-sharepoint-drive-fix";
-console.log(`PrintSvc build: ${BUILD_TAG}`);
+const BUILD_TAG = process.env.BUILD_TAG || "2026-03-05-sharepoint-drive-fix";
+
+function isoNow() {
+  return new Date().toISOString();
+}
+
+function writeStructuredLog(level, event, details = {}, message) {
+  const payload = {
+    timestamp: isoNow(),
+    build: BUILD_TAG,
+    level,
+    event,
+    ...details
+  };
+
+  if (message) {
+    const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
+    fn(message);
+  }
+
+  const serialized = JSON.stringify(payload);
+  if (level === "error") console.error(serialized);
+  else if (level === "warn") console.warn(serialized);
+  else console.log(serialized);
+
+  return payload;
+}
+
+function logInfo(event, details = {}, message) {
+  return writeStructuredLog("info", event, details, message);
+}
+
+function logWarn(event, details = {}, message) {
+  return writeStructuredLog("warn", event, details, message);
+}
+
+function logError(event, details = {}, message) {
+  return writeStructuredLog("error", event, details, message);
+}
+
+function logEvent(event, details = {}, message) {
+  return logInfo(event, details, message);
+}
+
+logInfo("service_start", { port: process.env.PORT || null }, `PrintSvc build: ${BUILD_TAG}`);
 
 
 const express = require("express");
@@ -77,7 +120,11 @@ function getDvUrlForRequest(req) {
  * Mappings (station -> printer/template)
  * =========================
  */
-const mappings = JSON.parse(fs.readFileSync(mappingsPath, "utf8"));
+function loadMappingsFile() {
+  return JSON.parse(fs.readFileSync(mappingsPath, "utf8"));
+}
+
+const mappings = loadMappingsFile();
 
 function getLotFamily(lotNumber) {
   const prefix = (lotNumber || "").trim().substring(0, 2).toUpperCase();
@@ -230,12 +277,13 @@ async function getDataverseAccessToken(baseUrl) {
   return accessToken;
 }
 
-async function dvGet(baseUrl, path) {
+async function dvGet(baseUrl, path, extraConfig = {}) {
   const token = await getDataverseAccessToken(baseUrl);
   const url = `${baseUrl}${path}`;
   const r = await axios.get(url, {
-    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-    timeout: 30000
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json", ...(extraConfig.headers || {}) },
+    timeout: 30000,
+    ...extraConfig
   });
   return r.data;
 }
@@ -360,6 +408,123 @@ const LOG_STATION_COL = process.env.DV_PRINTLOG_STATION_COL || "rm_station";
 const LOG_LOT_NAV_PROP = process.env.DV_PRINTLOG_LOT_NAV || "rm_Lot";
 const LOG_INVENTORY_NAV_PROP = process.env.DV_PRINTLOG_INVENTORY_NAV || "rm_Inventory";
 
+function formatErrorDetail(error) {
+  if (!error) return "Unknown error";
+  if (error.response?.data) {
+    try {
+      return JSON.stringify(error.response.data);
+    } catch {
+      return String(error.response.data);
+    }
+  }
+  return error.message || String(error);
+}
+
+function escapeODataString(value) {
+  return String(value || "").replace(/'/g, "''");
+}
+
+function normalizeResultLabel(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+async function getLatestPrintLogByResult(baseUrl, resultLabel) {
+  const filter = `${LOG_RESULT_COL} eq '${escapeODataString(resultLabel)}'`;
+  const path = `/api/data/v9.2/${DV_PRINTLOG_ENTITYSET}?$select=${LOG_PRINTEDON_COL},${LOG_RESULT_COL}&$filter=${encodeURIComponent(filter)}&$orderby=${LOG_PRINTEDON_COL} desc&$top=1`;
+  const data = await dvGet(baseUrl, path);
+  const row = data?.value?.[0];
+  return row?.[LOG_PRINTEDON_COL] || null;
+}
+
+async function getPrintLogCountSince(baseUrl, resultLabel, sinceIso) {
+  const filter = `${LOG_RESULT_COL} eq '${escapeODataString(resultLabel)}' and ${LOG_PRINTEDON_COL} ge ${sinceIso}`;
+  const path = `/api/data/v9.2/${DV_PRINTLOG_ENTITYSET}?$select=${LOG_PRINTEDON_COL}&$filter=${encodeURIComponent(filter)}&$count=true&$top=1`;
+  const data = await dvGet(baseUrl, path, { headers: { Prefer: 'odata.include-annotations="*"' } });
+  return Number(data?.['@odata.count'] || 0);
+}
+
+async function getPrintMetricsSummary(baseUrl) {
+  const now = new Date();
+  const since15 = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
+  const since60 = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+
+  const [lastPrintSuccessUtc, lastPrintFailureUtc, successCount15m, successCount60m, failureCount15m, failureCount60m] = await Promise.all([
+    getLatestPrintLogByResult(baseUrl, 'Success'),
+    getLatestPrintLogByResult(baseUrl, 'Failed'),
+    getPrintLogCountSince(baseUrl, 'Success', since15),
+    getPrintLogCountSince(baseUrl, 'Success', since60),
+    getPrintLogCountSince(baseUrl, 'Failed', since15),
+    getPrintLogCountSince(baseUrl, 'Failed', since60)
+  ]);
+
+  return {
+    build: BUILD_TAG,
+    serverTimeUtc: now.toISOString(),
+    lastPrintSuccessUtc,
+    lastPrintFailureUtc,
+    successCount15m,
+    successCount60m,
+    failureCount15m,
+    failureCount60m,
+    activePrintJobsCount: activePrintJobs.size
+  };
+}
+
+async function runDeepHealthChecks(baseUrl) {
+  const checks = { server: 'ok', mappings: 'ok', bartender: 'ok', dataverse: 'ok', sharepoint: 'ok' };
+  const errors = {};
+
+  try {
+    loadMappingsFile();
+  } catch (error) {
+    checks.mappings = 'fail';
+    errors.mappings = formatErrorDetail(error);
+  }
+
+  try {
+    const authString = Buffer.from(`${process.env.BT_REST_USER || ''}:${process.env.BT_REST_PASSWORD || ''}`, 'utf8').toString('base64');
+    const response = await axios.options(BARTENDER_ACTIONS_URL, {
+      headers: authString ? { Authorization: `Basic ${authString}` } : {},
+      timeout: 10000,
+      validateStatus: () => true
+    });
+    if (response.status >= 500 || response.status === 0) {
+      throw new Error(`Unexpected status ${response.status}`);
+    }
+  } catch (error) {
+    checks.bartender = 'fail';
+    errors.bartender = formatErrorDetail(error);
+  }
+
+  try {
+    await getDataverseAccessToken(baseUrl);
+    await dvGet(baseUrl, '/api/data/v9.2/WhoAmI()');
+  } catch (error) {
+    checks.dataverse = 'fail';
+    errors.dataverse = formatErrorDetail(error);
+  }
+
+  try {
+    await getGraphAppToken();
+    await getOpDocsSiteId();
+  } catch (error) {
+    checks.sharepoint = 'fail';
+    errors.sharepoint = formatErrorDetail(error);
+  }
+
+  let lastSuccessfulPrintUtc = null;
+  if (checks.dataverse === 'ok') {
+    try {
+      lastSuccessfulPrintUtc = await getLatestPrintLogByResult(baseUrl, 'Success');
+    } catch (error) {
+      errors.lastSuccessfulPrintUtc = formatErrorDetail(error);
+    }
+  }
+
+  const ok = Object.values(checks).every((value) => value === 'ok');
+  return { ok, build: BUILD_TAG, checks, ...(Object.keys(errors).length ? { errors } : {}), lastSuccessfulPrintUtc };
+}
+
 async function writePrintLog(baseUrl, { lotId, inventoryId, rfid, station, printedBy, result, notes }) {
   try {
     const stationVal = STATION_CODE_TO_VALUE[String(station || "").toUpperCase()] ?? null;
@@ -378,7 +543,7 @@ async function writePrintLog(baseUrl, { lotId, inventoryId, rfid, station, print
     await dvPost(baseUrl, `/api/data/v9.2/${DV_PRINTLOG_ENTITYSET}`, body);
   } catch (e) {
     const msg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
-    console.warn("[PrintLog] Failed to write print log:", msg);
+    logWarn("print_log_write_failed", { message: msg }, `[PrintLog] Failed to write print log: ${msg}`);
   }
 }
 
@@ -781,9 +946,7 @@ async function uploadToOpDocsAppOnly({ docType, filename, buffer, contentType, s
 
   // NOTE: If this log still shows driveWebUrl ending with "/Shared Documents",
   // you're uploading into the default Documents library, not the dedicated libraries.
-  console.log(
-    `[UploadDocument] docType='${docTypeKey}' dest='${sharePointDestinationUrl || ""}' -> library='${driveName}' (${resolvedBy}) driveId='${driveId}' driveWebUrl='${driveWebUrl}' file='${safeName}' size=${buffer.length}`
-  );
+  logInfo("sharepoint_upload_resolved", { docType: docTypeKey, destinationUrl: sharePointDestinationUrl || null, library: driveName, resolvedBy, driveId, driveWebUrl, fileName: safeName, size: buffer.length }, `[UploadDocument] docType='${docTypeKey}' dest='${sharePointDestinationUrl || ""}' -> library='${driveName}' (${resolvedBy}) driveId='${driveId}' driveWebUrl='${driveWebUrl}' file='${safeName}' size=${buffer.length}`);
 
   // We still prefer small PUT for small files, but retry with an upload session on Graph 500/generalException.
   try {
@@ -811,9 +974,7 @@ async function uploadToOpDocsAppOnly({ docType, filename, buffer, contentType, s
       (String(msg).toLowerCase().includes("generalexception") || status === 500 || status === 503);
 
     if (shouldRetryWithSession) {
-      console.warn(
-        `[OpDocsUpload] Small upload failed with '${msg || status}'. Retrying via upload session...`
-      );
+      logWarn("sharepoint_upload_retry", { status, message: msg || String(status || "") }, `[OpDocsUpload] Small upload failed with '${msg || status}'. Retrying via upload session...`);
       return await uploadLargeToDrive({
         driveId,
         pathInDrive: safeName,
@@ -940,9 +1101,7 @@ async function uploadLargeToDrive({ driveId, pathInDrive, buffer, contentType })
         String(msg).toLowerCase().includes("generalexception");
 
       if (attempt < maxAttempts && transient) {
-        console.warn(
-          `[OpDocsUpload] Upload session failed (attempt ${attempt}/${maxAttempts}) with ${status || ""} ${msg}. Retrying...`
-        );
+        logWarn("sharepoint_upload_session_retry", { attempt, maxAttempts, status, message: msg }, `[OpDocsUpload] Upload session failed (attempt ${attempt}/${maxAttempts}) with ${status || ""} ${msg}. Retrying...`);
         await new Promise((r) => setTimeout(r, 600));
         continue;
       }
@@ -998,12 +1157,38 @@ app.use((req, res, next) => {
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
+app.get("/health/deep", async (req, res) => {
+  const baseUrl = getDvUrlForRequest(req);
+  try {
+    const payload = await runDeepHealthChecks(baseUrl);
+    logInfo("health_deep", { ok: payload.ok, checks: payload.checks, errors: payload.errors || null });
+    return res.status(payload.ok ? 200 : 503).json(payload);
+  } catch (error) {
+    const detail = formatErrorDetail(error);
+    logError("health_deep_failed", { message: detail });
+    return res.status(503).json({ ok: false, build: BUILD_TAG, checks: { server: "ok" }, errors: { server: detail }, lastSuccessfulPrintUtc: null });
+  }
+});
+
+app.get("/metrics/summary", async (req, res) => {
+  const baseUrl = getDvUrlForRequest(req);
+  try {
+    const payload = await getPrintMetricsSummary(baseUrl);
+    logInfo("metrics_summary", { activePrintJobsCount: payload.activePrintJobsCount });
+    return res.json(payload);
+  } catch (error) {
+    const detail = formatErrorDetail(error);
+    logError("metrics_summary_failed", { message: detail });
+    return res.status(503).json({ ok: false, build: BUILD_TAG, message: detail });
+  }
+});
+
 /**
  * =========================
  * Secure routes (Entra protected)
  * =========================
  */
-const activePrintJobs = new Map(); // key -> startedAtMs
+const activePrintJobs = new Map(); // key -> startedAtMs for in-flight print requests
 const PRINT_LOCK_TTL_MS = 2 * 60 * 1000; // 2 minutes (tweak if you want)
 
 app.post("/api/print", requireBearerToken, requireValidToken, handlePrintLot);
@@ -1055,7 +1240,7 @@ async function handleUploadDocument(req, res) {
     });
   } catch (e) {
     const msg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
-    console.error("[UploadDocument] Failed:", msg);
+    logError("upload_document_failed", { message: msg }, `[UploadDocument] Failed: ${msg}`);
     return res.status(500).json({ ok: false, error: "UPLOAD_FAILED", message: msg });
   }
 }
@@ -1146,7 +1331,7 @@ async function handlePrintLot(req, res) {
 
     // Auto-expire stale lock
     if (existing && (now - existing) > PRINT_LOCK_TTL_MS) {
-      console.warn(`[PrintSvc] Expiring stale print lock for ${lockKey} (ageMs=${now - existing})`);
+      logWarn("print_lock_expired", { lockKey, ageMs: now - existing }, `[PrintSvc] Expiring stale print lock for ${lockKey} (ageMs=${now - existing})`);
       activePrintJobs.delete(lockKey);
     }
 
@@ -1177,7 +1362,7 @@ async function handlePrintLot(req, res) {
     for (let b = fb; b <= lb; b++) if (!byBox.has(b)) missingBoxes.push(b);
 
     if (dryRun === true) {
-      console.log(`[PrintSvc] DRYRUN station=${station} lot=${lotNumber} missing=${missingBoxes.length}`);
+      logInfo("print_dry_run", { station, lotNumber, missingBoxesCount: missingBoxes.length, firstBox: fb, lastBox: lb }, `[PrintSvc] DRYRUN station=${station} lot=${lotNumber} missing=${missingBoxes.length}`);
       return res.json({
         ok: true,
         dryRun: true,
@@ -1197,7 +1382,7 @@ async function handlePrintLot(req, res) {
     }
 
     if (missingBoxes.length > 0 && allowMissing !== true) {
-      console.log(`[PrintSvc] ABORT missing boxes station=${station} lot=${lotNumber} missing=${missingBoxes.join(",")}`);
+      logWarn("print_missing_boxes", { station, lotNumber, missingBoxes, firstBox: fb, lastBox: lb }, `[PrintSvc] ABORT missing boxes station=${station} lot=${lotNumber} missing=${missingBoxes.join(",")}`);
       return res.status(409).json({
         ok: false,
         code: "MISSING_BOXES",
@@ -1247,7 +1432,7 @@ async function handlePrintLot(req, res) {
       };
 
       try {
-        console.log(`[PrintSvc] -> BarTender PRINT box=${box} rfid=${rfid} printer="${printer}" template="${template}"`);
+        logEvent("print_attempt", { station, lotNumber, box, rfid, printer, template }, `[PrintSvc] -> BarTender PRINT box=${box} rfid=${rfid} printer="${printer}" template="${template}"`);
 
         const action = await bartenderPrintBTW({
           documentPath: template,
@@ -1259,7 +1444,7 @@ async function handlePrintLot(req, res) {
         const actionId = action?.Id || null;
         const status = action?.Status || null;
 
-        console.log(`[PrintSvc] <- BarTender actionId=${actionId} status=${status} box=${box}`);
+        logInfo("print_success", { station, lotNumber, box, rfid, printer, template, actionId, status }, `[PrintSvc] <- BarTender actionId=${actionId} status=${status} box=${box}`);
 
         results.push({ box, rfid, pounds: named.pounds, actionId, status });
 
@@ -1274,7 +1459,7 @@ async function handlePrintLot(req, res) {
         });
       } catch (e) {
         const msg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
-        console.error(`[PrintSvc] FAILED box=${box} lot=${lotNumber} station=${station}: ${msg}`);
+        logError("print_failure", { station, lotNumber, box, rfid, printer, template, message: msg }, `[PrintSvc] FAILED box=${box} lot=${lotNumber} station=${station}: ${msg}`);
 
         await writePrintLog(baseUrl, {
           lotId: effectiveLotId,
@@ -1310,6 +1495,7 @@ async function handlePrintLot(req, res) {
       results
     });
   } catch (e) {
+    logError("print_request_failed", { message: e.message, bartender: e.response?.data || null, lockKey });
     return res.status(500).json({ ok: false, message: e.message, bartender: e.response?.data || null });
   } finally {
     if (lockKey) activePrintJobs.delete(lockKey);
@@ -1317,5 +1503,5 @@ async function handlePrintLot(req, res) {
 }
 
 app.listen(Number(PORT), "0.0.0.0", () => {
-  console.log(`PrintSvc listening on http://0.0.0.0:${PORT}`);
+  logInfo("service_listening", { port: Number(PORT), host: "0.0.0.0" }, `PrintSvc listening on http://0.0.0.0:${PORT}`);
 });
