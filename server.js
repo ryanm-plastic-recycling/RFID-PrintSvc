@@ -470,9 +470,29 @@ async function getPrintMetricsSummary(baseUrl) {
   };
 }
 
+async function probeSharePointHealth() {
+  requireSpConfig();
+
+  const token = await getGraphAppToken();
+  if (!token) throw new Error("Graph token acquisition returned an empty access token.");
+
+  const sitePath = String(SP_SITE_PATH || "").startsWith("/") ? SP_SITE_PATH : `/${SP_SITE_PATH}`;
+  const site = await graphGet(`https://graph.microsoft.com/v1.0/sites/${SP_HOSTNAME}:${sitePath}?$select=id,webUrl`);
+
+  if (!site?.id) {
+    throw new Error("Graph site probe succeeded but site.id was missing.");
+  }
+
+  graphSiteCache.siteId = site.id;
+  graphSiteCache.checkedAt = Date.now();
+
+  return { siteId: site.id, webUrl: site.webUrl || null };
+}
+
 async function runDeepHealthChecks(baseUrl) {
   const checks = { server: 'ok', mappings: 'ok', bartender: 'ok', dataverse: 'ok', sharepoint: 'ok' };
   const errors = {};
+  let sharepoint = null;
 
   try {
     loadMappingsFile();
@@ -505,8 +525,7 @@ async function runDeepHealthChecks(baseUrl) {
   }
 
   try {
-    await getGraphAppToken();
-    await getOpDocsSiteId();
+    sharepoint = await probeSharePointHealth();
   } catch (error) {
     checks.sharepoint = 'fail';
     errors.sharepoint = formatErrorDetail(error);
@@ -522,7 +541,14 @@ async function runDeepHealthChecks(baseUrl) {
   }
 
   const ok = Object.values(checks).every((value) => value === 'ok');
-  return { ok, build: BUILD_TAG, checks, ...(Object.keys(errors).length ? { errors } : {}), lastSuccessfulPrintUtc };
+  return {
+    ok,
+    build: BUILD_TAG,
+    checks,
+    ...(Object.keys(errors).length ? { errors } : {}),
+    ...(sharepoint ? { sharepoint } : {}),
+    lastSuccessfulPrintUtc
+  };
 }
 
 async function writePrintLog(baseUrl, { lotId, inventoryId, rfid, station, printedBy, result, notes }) {
@@ -1136,6 +1162,16 @@ const ALLOWED_ORIGINS = new Set([
   "https://pritest.crm.dynamics.com"
 ]);
 
+const PUBLIC_MONITORING_ROUTES = new Set([
+  "GET /health",
+  "GET /health/deep",
+  "GET /metrics/summary"
+]);
+
+function isPublicMonitoringRoute(req) {
+  return PUBLIC_MONITORING_ROUTES.has(`${req.method.toUpperCase()} ${req.path}`);
+}
+
 app.use((req, res, next) => {
   const origin = String(req.headers.origin || "");
   if (origin && ALLOWED_ORIGINS.has(origin)) {
@@ -1155,7 +1191,14 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/health", (req, res) => res.json({ ok: true }));
+app.use((req, res, next) => {
+  if (isPublicMonitoringRoute(req)) {
+    res.setHeader("Cache-Control", "no-store");
+  }
+  next();
+});
+
+app.get("/health", (req, res) => res.json({ ok: true, build: BUILD_TAG }));
 
 app.get("/health/deep", async (req, res) => {
   const baseUrl = getDvUrlForRequest(req);
