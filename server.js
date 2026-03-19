@@ -83,7 +83,7 @@ const {
   DV_URL_DEV,
   DV_URL_PROD,
 
-  // SharePoint / Graph (app-only) — Sites.Selected assignment required on target site
+  // SharePoint / Graph (app-only) ? Sites.Selected assignment required on target site
   SP_TENANT_ID,
   SP_CLIENT_ID,
   SP_CLIENT_SECRET,
@@ -304,8 +304,15 @@ async function dvPost(baseUrl, path, body) {
 const DV_LOT_ENTITYSET = process.env.DV_LOT_ENTITYSET || "rm_lots";
 const DV_INVENTORY_ENTITYSET = process.env.DV_INVENTORY_ENTITYSET || "rm_inventories";
 const DV_PRINTLOG_ENTITYSET = process.env.DV_PRINTLOG_ENTITYSET || "rm_printlogs";
+const DV_PRODUCT_ENTITYSET = process.env.DV_PRODUCT_ENTITYSET || "rm_products";
 
 const DV_LOTNUMBER_COL = process.env.DV_LOTNUMBER_COL || "rm_lotnumber";
+const DV_LOT_PURCHASEORDER_COL = process.env.DV_LOT_PURCHASEORDER_COL || "rm_purchaseorder";
+const DV_LOT_PRODUCTLOOKUP_COL = process.env.DV_LOT_PRODUCTLOOKUP_COL || "rm_product";
+const DV_LOT_COLORTEXT_COL = process.env.DV_LOT_COLORTEXT_COL || "crb9d_colortext";
+const DV_LOT_MATERIALSHORTTEXT_COL = process.env.DV_LOT_MATERIALSHORTTEXT_COL || "rm_materialshorttext";
+const DV_LOT_TOLLING_COL = process.env.DV_LOT_TOLLING_COL || "rm_tolling";
+const DV_PRODUCT_NAME_COL = process.env.DV_PRODUCT_NAME_COL || "rm_productname";
 
 const DV_INV_LOTLOOKUP_COL = process.env.DV_INV_LOTLOOKUP_COL || "rm_lot";
 const DV_INV_BOX_COL = process.env.DV_INV_BOX_COL || "rm_box";
@@ -345,6 +352,52 @@ async function getLotNumberById(baseUrl, lotId) {
   if (!lotNumber) throw new Error(`Lot found but ${DV_LOTNUMBER_COL} is empty for lotId=${id}`);
 
   return String(lotNumber);
+}
+
+function toPrintString(value) {
+  if (value == null) return "";
+  return String(value).trim();
+}
+
+function isTruthyDataverseBoolean(value) {
+  if (value === true || value === 1) return true;
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "true" || normalized === "yes" || normalized === "1";
+}
+
+async function getLotLabelData(baseUrl, lotId) {
+  const id = normalizeGuid(lotId);
+  if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error(`Invalid lotId GUID: ${lotId}`);
+
+  const lotProductLookupValueCol = `_${DV_LOT_PRODUCTLOOKUP_COL}_value`;
+  const selectCols = [
+    DV_LOT_PURCHASEORDER_COL,
+    DV_LOT_COLORTEXT_COL,
+    DV_LOT_MATERIALSHORTTEXT_COL,
+    DV_LOT_TOLLING_COL,
+    lotProductLookupValueCol
+  ].join(",");
+
+  const lot = await dvGet(baseUrl, `/api/data/v9.2/${DV_LOT_ENTITYSET}(${id})?$select=${selectCols}`);
+
+  const productId = lot?.[lotProductLookupValueCol];
+  let productName = "";
+
+  if (productId) {
+    const product = await dvGet(
+      baseUrl,
+      `/api/data/v9.2/${DV_PRODUCT_ENTITYSET}(${normalizeGuid(productId)})?$select=${DV_PRODUCT_NAME_COL}`
+    );
+    productName = product?.[DV_PRODUCT_NAME_COL] || "";
+  }
+
+  return {
+    po: toPrintString(lot?.[DV_LOT_PURCHASEORDER_COL]),
+    prodname: toPrintString(productName),
+    color: toPrintString(lot?.[DV_LOT_COLORTEXT_COL]),
+    type: toPrintString(lot?.[DV_LOT_MATERIALSHORTTEXT_COL]),
+    tolling: isTruthyDataverseBoolean(lot?.[DV_LOT_TOLLING_COL]) ? "Tolling" : ""
+  };
 }
 
 async function getInventoryRowsForLotRange(baseUrl, lotId, firstBox, lastBox) {
@@ -1237,7 +1290,7 @@ const PRINT_LOCK_TTL_MS = 2 * 60 * 1000; // 2 minutes (tweak if you want)
 app.post("/api/print", requireBearerToken, requireValidToken, handlePrintLot);
 app.post("/print/lot", requireBearerToken, requireValidToken, handlePrintLot);
 
-// ✅ Server-side SharePoint upload (app-only, Sites.Selected)
+// ? Server-side SharePoint upload (app-only, Sites.Selected)
 app.post(
   "/api/uploadDocument",
   requireBearerToken,
@@ -1353,7 +1406,7 @@ async function handlePrintLot(req, res) {
 
     if (!Number.isInteger(fb) || !Number.isInteger(lb) || fb < 1 || lb > 99 || fb > lb) {
       return res.status(400).json({
-        error: "firstBox/lastBox must be integers 1–99 and firstBox <= lastBox",
+        error: "firstBox/lastBox must be integers 1?99 and firstBox <= lastBox",
         got: { firstBox: firstBoxRaw, lastBox: lastBoxRaw, singleBox: singleBoxRaw }
       });
     }
@@ -1438,6 +1491,7 @@ async function handlePrintLot(req, res) {
       });
     }
 
+    const lotLabelData = await getLotLabelData(baseUrl, effectiveLotId);
     const printedBy = req.user?.preferred_username || req.user?.upn || "";
     const results = [];
 
@@ -1466,11 +1520,11 @@ async function handlePrintLot(req, res) {
         firstbox: String(box),
         RFID: String(rfid),
         pounds: poundsVal == null ? "" : String(poundsVal),
-        po: "",
-        prodname: "",
-        color: "",
-        type: "",
-        tolling: "",
+        po: lotLabelData.po,
+        prodname: lotLabelData.prodname,
+        color: lotLabelData.color,
+        type: lotLabelData.type,
+        tolling: lotLabelData.tolling,
         erp: ""
       };
 
