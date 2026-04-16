@@ -62,6 +62,9 @@ const mappingsPath = path.join(CONFIG_DIR, "mappings.json");
 const GRAPH_DRIVE_CACHE_MS = 6 * 60 * 60 * 1000; // 6 hours
 const SMALL_UPLOAD_MAX = 4 * 1024 * 1024; // 4 MB or whatever threshold you want
 
+const DV_INV_NOWEIGHT_COL = process.env.DV_INV_NOWEIGHT_COL || "rm_noweightmode";
+
+
 /**
  * =========================
  * Environment Configuration
@@ -404,7 +407,13 @@ async function getInventoryRowsForLotRange(baseUrl, lotId, firstBox, lastBox) {
   const id = normalizeGuid(lotId);
   const lotLookupValueCol = `_${DV_INV_LOTLOOKUP_COL}_value`;
 
-  const selectCols = [DV_INV_ID_COL, DV_INV_BOX_COL, DV_INV_RFID_COL, DV_INV_WEIGHT_COL].join(",");
+  const selectCols = [
+    DV_INV_ID_COL,
+    DV_INV_BOX_COL,
+    DV_INV_RFID_COL,
+    DV_INV_WEIGHT_COL,
+    DV_INV_NOWEIGHT_COL
+  ].join(",");  
 
   const filter = [
     `${lotLookupValueCol} eq ${id}`,
@@ -1514,12 +1523,13 @@ async function handlePrintLot(req, res) {
       const inventoryId = row[DV_INV_ID_COL];
       const rfid = row[DV_INV_RFID_COL] || `${lotNumber}-B${pad2(box)}`;
       const poundsVal = row[DV_INV_WEIGHT_COL];
+      const isNoWeight = isTruthyDataverseBoolean(row[DV_INV_NOWEIGHT_COL]);
 
       const named = {
         lot: lotNumber,
         firstbox: String(box),
         RFID: String(rfid),
-        pounds: poundsVal == null ? "" : String(poundsVal),
+        pounds: isNoWeight ? "_" : (poundsVal == null ? "" : String(poundsVal)),
         po: lotLabelData.po,
         prodname: lotLabelData.prodname,
         color: lotLabelData.color,
