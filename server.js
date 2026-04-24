@@ -46,7 +46,6 @@ function logEvent(event, details = {}, message) {
 
 logInfo("service_start", { port: process.env.PORT || null }, `PrintSvc build: ${BUILD_TAG}`);
 
-
 const express = require("express");
 const axios = require("axios");
 const jwt = require("jsonwebtoken");
@@ -63,7 +62,7 @@ const GRAPH_DRIVE_CACHE_MS = 6 * 60 * 60 * 1000; // 6 hours
 const SMALL_UPLOAD_MAX = 4 * 1024 * 1024; // 4 MB or whatever threshold you want
 
 const DV_INV_NOWEIGHT_COL = process.env.DV_INV_NOWEIGHT_COL || "rm_noweightmode";
-
+const PRINT_JOB_SPACING_MS = Number(process.env.PRINT_JOB_SPACING_MS || 1500);
 
 /**
  * =========================
@@ -316,6 +315,8 @@ const DV_LOT_COLORTEXT_COL = process.env.DV_LOT_COLORTEXT_COL || "crb9d_colortex
 const DV_LOT_MATERIALSHORTTEXT_COL = process.env.DV_LOT_MATERIALSHORTTEXT_COL || "rm_materialshorttext";
 const DV_LOT_TOLLING_COL = process.env.DV_LOT_TOLLING_COL || "rm_tolling";
 const DV_PRODUCT_NAME_COL = process.env.DV_PRODUCT_NAME_COL || "rm_productname";
+const DV_PRODUCT_CODE_COL = process.env.DV_PRODUCT_CODE_COL || "rm_productcode";
+const DV_PRODUCT_LABELDESCRIPTION_COL = process.env.DV_PRODUCT_LABELDESCRIPTION_COL || "rm_productlabeldescription";
 
 const DV_INV_LOTLOOKUP_COL = process.env.DV_INV_LOTLOOKUP_COL || "rm_lot";
 const DV_INV_BOX_COL = process.env.DV_INV_BOX_COL || "rm_box";
@@ -384,21 +385,34 @@ async function getLotLabelData(baseUrl, lotId) {
   const lot = await dvGet(baseUrl, `/api/data/v9.2/${DV_LOT_ENTITYSET}(${id})?$select=${selectCols}`);
 
   const productId = lot?.[lotProductLookupValueCol];
-  let productName = "";
+  let productCode = "";
+  let productLabelDescription = "";
 
   if (productId) {
+    const productSelectCols = [
+      DV_PRODUCT_CODE_COL,
+      DV_PRODUCT_LABELDESCRIPTION_COL
+    ].join(",");
+
     const product = await dvGet(
       baseUrl,
-      `/api/data/v9.2/${DV_PRODUCT_ENTITYSET}(${normalizeGuid(productId)})?$select=${DV_PRODUCT_NAME_COL}`
+      `/api/data/v9.2/${DV_PRODUCT_ENTITYSET}(${normalizeGuid(productId)})?$select=${productSelectCols}`
     );
-    productName = product?.[DV_PRODUCT_NAME_COL] || "";
+
+    productCode = product?.[DV_PRODUCT_CODE_COL] || "";
+    productLabelDescription = product?.[DV_PRODUCT_LABELDESCRIPTION_COL] || "";
   }
+
+  const materialShortText = toPrintString(lot?.[DV_LOT_MATERIALSHORTTEXT_COL]);
 
   return {
     po: toPrintString(lot?.[DV_LOT_PURCHASEORDER_COL]),
-    prodname: toPrintString(productName),
+    prodname: toPrintString(productLabelDescription),
+    proddesc: toPrintString(productLabelDescription),
+    prodnum: toPrintString(productCode),
+    product: materialShortText,
     color: toPrintString(lot?.[DV_LOT_COLORTEXT_COL]),
-    type: toPrintString(lot?.[DV_LOT_MATERIALSHORTTEXT_COL]),
+    type: materialShortText,
     tolling: isTruthyDataverseBoolean(lot?.[DV_LOT_TOLLING_COL]) ? "Tolling" : ""
   };
 }
@@ -413,7 +427,7 @@ async function getInventoryRowsForLotRange(baseUrl, lotId, firstBox, lastBox) {
     DV_INV_RFID_COL,
     DV_INV_WEIGHT_COL,
     DV_INV_NOWEIGHT_COL
-  ].join(",");  
+  ].join(",");
 
   const filter = [
     `${lotLookupValueCol} eq ${id}`,
@@ -428,7 +442,13 @@ async function getInventoryRowsForLotRange(baseUrl, lotId, firstBox, lastBox) {
     `&$orderby=${DV_INV_BOX_COL} asc`;
 
   const data = await dvGet(baseUrl, path);
-  return Array.isArray(data?.value) ? data.value : [];
+  const rows = Array.isArray(data?.value) ? data.value : [];
+
+  // Defensive numeric sort. The OData $orderby is retained, but the print path
+  // must not depend on Dataverse/API response ordering.
+  rows.sort((a, b) => Number(a?.[DV_INV_BOX_COL] || 0) - Number(b?.[DV_INV_BOX_COL] || 0));
+
+  return rows;
 }
 
 // Station choice mapping
@@ -804,7 +824,6 @@ function normalizeDriveNameForCompare(name) {
     .replace(/\s+/g, " ");
 }
 
-
 function normalizeSpUrlForCompare(urlStr) {
   return safeDecodeURIComponent(String(urlStr || ""))
     .trim()
@@ -942,7 +961,7 @@ function normalizeDocTypeKey(docType) {
  *   https://plasticrecycling.sharepoint.com/sites/OpDocs/<segment>
  */
 function librarySegmentForDocType(docTypeKey) {
-  const dt = normalizeDocTypeKey(docTypeKey);
+  const dtKey = normalizeDocTypeKey(docTypeKey);
   const MAP = {
     BOL: "BOL",
     ScaleTicket: "Scale Ticket",
@@ -950,7 +969,7 @@ function librarySegmentForDocType(docTypeKey) {
     PurchaseOrder: "Purchase orders",
     Other: "Misc",
   };
-  return MAP[dt] || "Misc";
+  return MAP[dtKey] || "Misc";
 }
 
 function driveEndsWithLibrarySegment(driveWebUrl, segment) {
@@ -1074,7 +1093,6 @@ async function uploadToOpDocsAppOnly({ docType, filename, buffer, contentType, s
     throw err;
   }
 }
-
 
 async function graphPost(url, body) {
   const token = await getGraphAppToken();
@@ -1201,7 +1219,6 @@ async function uploadLargeToDrive({ driveId, pathInDrive, buffer, contentType })
   throw lastErr;
 }
 
-
 /**
  * =========================
  * Express app
@@ -1295,6 +1312,35 @@ app.get("/metrics/summary", async (req, res) => {
  */
 const activePrintJobs = new Map(); // key -> startedAtMs for in-flight print requests
 const PRINT_LOCK_TTL_MS = 2 * 60 * 1000; // 2 minutes (tweak if you want)
+const printerQueues = new Map(); // printerName -> promise chain so whole-lot label runs do not interleave
+
+function getSafePrintJobSpacingMs() {
+  return Number.isFinite(PRINT_JOB_SPACING_MS) && PRINT_JOB_SPACING_MS >= 0 ? PRINT_JOB_SPACING_MS : 1500;
+}
+
+function enqueuePrinterWork(printerName, work) {
+  const key = String(printerName || "UNKNOWN_PRINTER").trim() || "UNKNOWN_PRINTER";
+  const previous = printerQueues.get(key) || Promise.resolve();
+
+  const run = previous
+    .catch(() => {
+      // Keep the queue alive even if the previous print run failed.
+    })
+    .then(work);
+
+  printerQueues.set(key, run);
+
+  run.finally(() => {
+    if (printerQueues.get(key) === run) {
+      printerQueues.delete(key);
+    }
+  }).catch(() => {
+    // The caller handles the real error; this prevents an unhandled rejection
+    // from the cleanup branch.
+  });
+
+  return run;
+}
 
 app.post("/api/print", requireBearerToken, requireValidToken, handlePrintLot);
 app.post("/print/lot", requireBearerToken, requireValidToken, handlePrintLot);
@@ -1460,11 +1506,30 @@ async function handlePrintLot(req, res) {
     const byBox = new Map();
     for (const r of rows) {
       const b = Number(r[DV_INV_BOX_COL]);
-      if (Number.isInteger(b)) byBox.set(b, r);
+      if (!Number.isInteger(b)) continue;
+
+      // Keep the first row for a box number and log duplicates instead of
+      // allowing duplicate inventory rows to make the sequence unpredictable.
+      if (byBox.has(b)) {
+        logWarn(
+          "print_duplicate_box_number",
+          { station, lotId: normalizeGuid(effectiveLotId), box: b },
+          `[PrintSvc] Duplicate inventory row for box=${b}; using first row in print sequence`
+        );
+        continue;
+      }
+
+      byBox.set(b, r);
     }
 
-    const missingBoxes = [];
-    for (let b = fb; b <= lb; b++) if (!byBox.has(b)) missingBoxes.push(b);
+    const requestedBoxes = [];
+    for (let b = fb; b <= lb; b++) requestedBoxes.push(b);
+
+    // Single source of truth for print order. Everything below walks this array,
+    // so labels are submitted 1, 2, 3 ... regardless of Dataverse/page ordering.
+    requestedBoxes.sort((a, b) => a - b);
+
+    const missingBoxes = requestedBoxes.filter((b) => !byBox.has(b));
 
     if (dryRun === true) {
       logInfo("print_dry_run", { station, lotNumber, missingBoxesCount: missingBoxes.length, firstBox: fb, lastBox: lb }, `[PrintSvc] DRYRUN station=${station} lot=${lotNumber} missing=${missingBoxes.length}`);
@@ -1480,7 +1545,7 @@ async function handlePrintLot(req, res) {
         template,
         firstBox: fb,
         lastBox: lb,
-        requestedCount: lb - fb + 1,
+        requestedCount: requestedBoxes.length,
         foundCount: rows.length,
         missingBoxes
       });
@@ -1503,86 +1568,98 @@ async function handlePrintLot(req, res) {
     const lotLabelData = await getLotLabelData(baseUrl, effectiveLotId);
     const printedBy = req.user?.preferred_username || req.user?.upn || "";
     const results = [];
+    const printJobSpacingMs = getSafePrintJobSpacingMs();
 
-    for (let box = fb; box <= lb; box++) {
-      const row = byBox.get(box);
+    logInfo(
+      "print_sequence_resolved",
+      { station, lotNumber, printer, firstBox: fb, lastBox: lb, requestedBoxes, printJobSpacingMs },
+      `[PrintSvc] Print sequence resolved station=${station} lot=${lotNumber}: ${requestedBoxes.join(",")}`
+    );
 
-      if (!row) {
-        await writePrintLog(baseUrl, {
-          lotId: effectiveLotId,
-          inventoryId: null,
-          rfid: `${lotNumber}-B${pad2(box)}`,
-          station,
-          printedBy,
-          result: "Skipped",
-          notes: "Inventory row missing for this box number"
-        });
-        continue;
+    await enqueuePrinterWork(printer, async () => {
+      for (const box of requestedBoxes) {
+        const row = byBox.get(box);
+
+        if (!row) {
+          await writePrintLog(baseUrl, {
+            lotId: effectiveLotId,
+            inventoryId: null,
+            rfid: `${lotNumber}-B${pad2(box)}`,
+            station,
+            printedBy,
+            result: "Skipped",
+            notes: "Inventory row missing for this box number"
+          });
+          continue;
+        }
+
+        const inventoryId = row[DV_INV_ID_COL];
+        const rfid = row[DV_INV_RFID_COL] || `${lotNumber}-B${pad2(box)}`;
+        const poundsVal = row[DV_INV_WEIGHT_COL];
+        const isNoWeight = isTruthyDataverseBoolean(row[DV_INV_NOWEIGHT_COL]);
+
+        const named = {
+          lot: lotNumber,
+          firstbox: String(box),
+          RFID: String(rfid),
+          pounds: isNoWeight ? "_" : (poundsVal == null ? "" : String(poundsVal)),
+          po: lotLabelData.po,
+          prodname: lotLabelData.prodname,
+          proddesc: lotLabelData.proddesc,
+          prodnum: lotLabelData.prodnum,
+          product: lotLabelData.product,
+          color: lotLabelData.color,
+          type: lotLabelData.type,
+          tolling: lotLabelData.tolling,
+          erp: ""
+        };
+
+        try {
+          logEvent("print_attempt", { station, lotNumber, box, rfid, printer, template }, `[PrintSvc] -> BarTender PRINT box=${box} rfid=${rfid} printer="${printer}" template="${template}"`);
+
+          const action = await bartenderPrintBTW({
+            documentPath: template,
+            printerName: printer,
+            namedDataSources: named,
+            copies: 1
+          });
+
+          const actionId = action?.Id || null;
+          const status = action?.Status || null;
+
+          logInfo("print_success", { station, lotNumber, box, rfid, printer, template, actionId, status }, `[PrintSvc] <- BarTender actionId=${actionId} status=${status} box=${box}`);
+
+          results.push({ box, rfid, pounds: named.pounds, actionId, status });
+
+          await writePrintLog(baseUrl, {
+            lotId: effectiveLotId,
+            inventoryId,
+            rfid,
+            station,
+            printedBy,
+            result: "Success",
+            notes: ""
+          });
+        } catch (e) {
+          const msg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+          logError("print_failure", { station, lotNumber, box, rfid, printer, template, message: msg }, `[PrintSvc] FAILED box=${box} lot=${lotNumber} station=${station}: ${msg}`);
+
+          await writePrintLog(baseUrl, {
+            lotId: effectiveLotId,
+            inventoryId,
+            rfid,
+            station,
+            printedBy,
+            result: "Failed",
+            notes: msg
+          });
+
+          throw e;
+        }
+
+        await sleep(printJobSpacingMs);
       }
-
-      const inventoryId = row[DV_INV_ID_COL];
-      const rfid = row[DV_INV_RFID_COL] || `${lotNumber}-B${pad2(box)}`;
-      const poundsVal = row[DV_INV_WEIGHT_COL];
-      const isNoWeight = isTruthyDataverseBoolean(row[DV_INV_NOWEIGHT_COL]);
-
-      const named = {
-        lot: lotNumber,
-        firstbox: String(box),
-        RFID: String(rfid),
-        pounds: isNoWeight ? "_" : (poundsVal == null ? "" : String(poundsVal)),
-        po: lotLabelData.po,
-        prodname: lotLabelData.prodname,
-        color: lotLabelData.color,
-        type: lotLabelData.type,
-        tolling: lotLabelData.tolling,
-        erp: ""
-      };
-
-      try {
-        logEvent("print_attempt", { station, lotNumber, box, rfid, printer, template }, `[PrintSvc] -> BarTender PRINT box=${box} rfid=${rfid} printer="${printer}" template="${template}"`);
-
-        const action = await bartenderPrintBTW({
-          documentPath: template,
-          printerName: printer,
-          namedDataSources: named,
-          copies: 1
-        });
-
-        const actionId = action?.Id || null;
-        const status = action?.Status || null;
-
-        logInfo("print_success", { station, lotNumber, box, rfid, printer, template, actionId, status }, `[PrintSvc] <- BarTender actionId=${actionId} status=${status} box=${box}`);
-
-        results.push({ box, rfid, pounds: named.pounds, actionId, status });
-
-        await writePrintLog(baseUrl, {
-          lotId: effectiveLotId,
-          inventoryId,
-          rfid,
-          station,
-          printedBy,
-          result: "Success",
-          notes: ""
-        });
-      } catch (e) {
-        const msg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
-        logError("print_failure", { station, lotNumber, box, rfid, printer, template, message: msg }, `[PrintSvc] FAILED box=${box} lot=${lotNumber} station=${station}: ${msg}`);
-
-        await writePrintLog(baseUrl, {
-          lotId: effectiveLotId,
-          inventoryId,
-          rfid,
-          station,
-          printedBy,
-          result: "Failed",
-          notes: msg
-        });
-
-        throw e;
-      }
-
-      await sleep(10);
-    }
+    });
 
     return res.json({
       ok: true,
@@ -1596,7 +1673,7 @@ async function handlePrintLot(req, res) {
       template,
       firstBox: fb,
       lastBox: lb,
-      requestedCount: lb - fb + 1,
+      requestedCount: requestedBoxes.length,
       printedCount: results.length,
       missingBoxes,
       results
