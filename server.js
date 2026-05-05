@@ -1,6 +1,6 @@
 require("dotenv").config();
 
-const BUILD_TAG = process.env.BUILD_TAG || "2026-03-05-sharepoint-drive-fix";
+const BUILD_TAG = process.env.BUILD_TAG || "2026-05-05-transformation-label-printing";
 
 function isoNow() {
   return new Date().toISOString();
@@ -148,19 +148,78 @@ function resolveTemplatePath(templateValue) {
   return path.join(TEMPLATE_DIR, fileName);
 }
 
+function getMappedPrinterForStation(station, usage, labelKind) {
+  const st = usage === "sample" ? normalizeSampleStation(station) : String(station || "").toUpperCase();
+  const kind = labelKind ? normalizeSampleLabelKind(labelKind) : "";
+
+  // RFID labels and QC/retain labels may use different physical printers at
+  // the same production station. RFID uses mappings.stations / mappings.rfidStations.
+  // QC/Retain uses mappings.sampleStations / mappings.sampleLabelStations.
+  // Do not fall back to the RFID printer for sample labels; that should fail fast
+  // if the QC printer is not explicitly mapped.
+  const stationMaps = usage === "sample"
+    ? [
+        kind ? mappings.sampleLabelStations?.[kind] : null,
+        mappings.sampleLabelStations,
+        kind ? mappings.sampleStations?.[kind] : null,
+        mappings.sampleStations,
+        kind ? mappings.qcStations?.[kind] : null,
+        mappings.qcStations
+      ]
+    : [mappings.rfidStations, mappings.stations];
+
+  for (const stationMap of stationMaps) {
+    const printer = stationMap?.[st]?.printer;
+    if (printer) return printer;
+  }
+
+  return "";
+}
+
 function resolvePrinterAndTemplate({ station, lotNumber }) {
   const fam = getLotFamily(lotNumber);
   const st = String(station || "").toUpperCase();
 
-  const printer = mappings.stations?.[st]?.printer;
+  const printer = getMappedPrinterForStation(st, "rfid");
   const templateValue = mappings.templates?.[fam]?.[st];
 
-  if (!printer) throw new Error(`Unknown station/printer mapping for station='${st}'`);
-  if (!templateValue) throw new Error(`No template for family='${fam}' station='${st}'`);
+  if (!printer) throw new Error(`Unknown RFID station/printer mapping for station='${st}'`);
+  if (!templateValue) throw new Error(`No RFID template for family='${fam}' station='${st}'`);
 
   const template = resolveTemplatePath(templateValue);
 
   return { family: fam, printer, template };
+}
+
+function normalizeSampleLabelKind(labelKindRaw) {
+  const raw = String(labelKindRaw || "").trim().toLowerCase().replace(/[\s_\-]/g, "");
+
+  if (["qcsample", "sample", "qc"].includes(raw)) return "QCSample";
+  if (["qcretain", "retain", "retainsample"].includes(raw)) return "QCRetain";
+
+  throw new Error(`Unknown sample label kind '${labelKindRaw}'. Expected QCSample or QCRetain.`);
+}
+
+function normalizeSampleStation(stationRaw) {
+  const raw = String(stationRaw || "").trim().toUpperCase();
+  if (!raw) return "";
+
+  const aliases = mappings.rules?.sampleStationAliases || {};
+  return String(aliases[raw] || raw).trim().toUpperCase();
+}
+
+function resolvePrinterAndSampleTemplate({ station, labelKind }) {
+  const st = normalizeSampleStation(station);
+  const kind = normalizeSampleLabelKind(labelKind);
+
+  const printer = getMappedPrinterForStation(st, "sample", kind);
+  const templateValue = mappings.templates?.[kind]?.[st];
+
+  if (!printer) throw new Error(`No QC/Retain printer mapping for labelKind='${kind}' station='${st}'. Add mappings.sampleStations.${st}.printer in mappings.json.`);
+  if (!templateValue) throw new Error(`No sample-label template for labelKind='${kind}' station='${st}'`);
+
+  const template = resolveTemplatePath(templateValue);
+  return { labelKind: kind, printer, template };
 }
 
 /**
@@ -463,10 +522,20 @@ const STATION_CODE_TO_VALUE = {
   P8: 126190007
 };
 
+// Optional QC-label choice values from the Dataverse Print Station global choice.
+// The current Transformation Label Printing page filters these choices out and
+// does not need them, but the server tolerates them if an older build sends one.
+const QC_LABEL_STATION_VALUE_TO_CODE = {
+  126190008: "P3",
+  126190009: "P4",
+  126190010: "P5"
+};
+
 // Reverse map + normalizer
-const STATION_VALUE_TO_CODE = Object.fromEntries(
-  Object.entries(STATION_CODE_TO_VALUE).map(([k, v]) => [String(v), k])
-);
+const STATION_VALUE_TO_CODE = {
+  ...Object.fromEntries(Object.entries(STATION_CODE_TO_VALUE).map(([k, v]) => [String(v), k])),
+  ...Object.fromEntries(Object.entries(QC_LABEL_STATION_VALUE_TO_CODE).map(([k, v]) => [String(k), v]))
+};
 
 function normalizeStation(stationRaw) {
   const s = String(stationRaw ?? "").trim();
@@ -474,6 +543,9 @@ function normalizeStation(stationRaw) {
 
   if (/^P[1-8]$/i.test(s)) return s.toUpperCase();
   if (/^\d+$/.test(s)) return STATION_VALUE_TO_CODE[s] || s;
+
+  const qcMatch = s.toUpperCase().match(/QC[^P]*P([1-8])/);
+  if (qcMatch) return `P${qcMatch[1]}`;
 
   return s.toUpperCase();
 }
@@ -1344,6 +1416,8 @@ function enqueuePrinterWork(printerName, work) {
 
 app.post("/api/print", requireBearerToken, requireValidToken, handlePrintLot);
 app.post("/print/lot", requireBearerToken, requireValidToken, handlePrintLot);
+app.post("/api/print/sample-labels", requireBearerToken, requireValidToken, handlePrintSampleLabels);
+app.post("/print/sample-labels", requireBearerToken, requireValidToken, handlePrintSampleLabels);
 
 // ? Server-side SharePoint upload (app-only, Sites.Selected)
 app.post(
@@ -1393,6 +1467,275 @@ async function handleUploadDocument(req, res) {
     const msg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
     logError("upload_document_failed", { message: msg }, `[UploadDocument] Failed: ${msg}`);
     return res.status(500).json({ ok: false, error: "UPLOAD_FAILED", message: msg });
+  }
+}
+
+function normalizeRequestedBoxesFromBody(body) {
+  if (Array.isArray(body?.boxes)) {
+    return Array.from(new Set(
+      body.boxes
+        .map((v) => Number(v))
+        .filter((n) => Number.isInteger(n) && n > 0 && n <= 9999)
+    )).sort((a, b) => a - b);
+  }
+
+  const singleBoxRaw = body?.box ?? body?.boxNumber ?? body?.Box ?? body?.BoxNumber ?? body?.rm_box ?? null;
+  if (singleBoxRaw != null && singleBoxRaw !== "") {
+    const n = Number(singleBoxRaw);
+    return Number.isInteger(n) && n > 0 && n <= 9999 ? [n] : [];
+  }
+
+  const firstBoxRaw = body?.firstBox ?? body?.FirstBox ?? body?.firstbox ?? null;
+  const lastBoxRaw = body?.lastBox ?? body?.LastBox ?? body?.lastbox ?? firstBoxRaw;
+  const firstBox = Number(firstBoxRaw);
+  const lastBox = Number(lastBoxRaw);
+
+  if (!Number.isInteger(firstBox) || !Number.isInteger(lastBox) || firstBox < 1 || lastBox > 9999 || firstBox > lastBox) return [];
+
+  const out = [];
+  for (let b = firstBox; b <= lastBox; b++) out.push(b);
+  return out;
+}
+
+async function handlePrintSampleLabels(req, res) {
+  let lockKey = null;
+
+  try {
+    const body = req.body || {};
+
+    const stationRaw =
+      body.station ??
+      body.printStation ??
+      body.stationCode ??
+      body.stationId ??
+      null;
+
+    const station = normalizeSampleStation(normalizeStation(stationRaw));
+    const labelKind = normalizeSampleLabelKind(body.labelKind ?? body.labelType ?? body.templateType ?? body.type);
+
+    const lotIdFromBody =
+      body.lotId ??
+      body.LotId ??
+      body.lotid ??
+      body.lot?.id ??
+      null;
+
+    const lotNumberFromBody =
+      body.lotNumber ??
+      body.LotNumber ??
+      body.lot ??
+      body.lotRef ??
+      null;
+
+    const requestedBoxes = normalizeRequestedBoxesFromBody(body);
+    const allowMissing = body.allowMissing === true;
+    const dryRun = body.dryRun === true;
+
+    if (!station || (!lotIdFromBody && !lotNumberFromBody) || !requestedBoxes.length) {
+      return res.status(400).json({
+        ok: false,
+        error: "station, lotId/lotNumber, labelKind, and boxes are required",
+        got: { stationRaw, stationNormalized: station, lotId: lotIdFromBody, lotNumber: lotNumberFromBody, labelKind, boxes: body.boxes }
+      });
+    }
+
+    const baseUrl = getDvUrlForRequest(req);
+
+    let effectiveLotId = lotIdFromBody;
+    if (!effectiveLotId && lotNumberFromBody) {
+      effectiveLotId = await getLotIdByLotNumber(baseUrl, lotNumberFromBody);
+    }
+
+    const lotNumber = await getLotNumberById(baseUrl, effectiveLotId);
+    const { printer, template } = resolvePrinterAndSampleTemplate({ station, labelKind });
+
+    lockKey = `${station}|${normalizeGuid(effectiveLotId)}|${labelKind}`;
+    const existing = activePrintJobs.get(lockKey);
+    const now = Date.now();
+
+    if (existing && (now - existing) > PRINT_LOCK_TTL_MS) {
+      logWarn("sample_print_lock_expired", { lockKey, ageMs: now - existing }, `[PrintSvc] Expiring stale sample-label print lock for ${lockKey} (ageMs=${now - existing})`);
+      activePrintJobs.delete(lockKey);
+    }
+
+    if (activePrintJobs.has(lockKey)) {
+      return res.status(409).json({
+        ok: false,
+        code: "PRINT_IN_PROGRESS",
+        message: "A sample-label print job is already running for this station and lot. Please wait a moment and try again.",
+        station,
+        lotId: normalizeGuid(effectiveLotId),
+        labelKind
+      });
+    }
+
+    if (!dryRun) activePrintJobs.set(lockKey, now);
+
+    const firstBox = Math.min(...requestedBoxes);
+    const lastBox = Math.max(...requestedBoxes);
+    const rows = await getInventoryRowsForLotRange(baseUrl, effectiveLotId, firstBox, lastBox);
+
+    const byBox = new Map();
+    for (const r of rows) {
+      const b = Number(r[DV_INV_BOX_COL]);
+      if (!Number.isInteger(b)) continue;
+      if (!byBox.has(b)) byBox.set(b, r);
+    }
+
+    const missingBoxes = requestedBoxes.filter((b) => !byBox.has(b));
+
+    if (dryRun === true) {
+      return res.json({
+        ok: true,
+        dryRun: true,
+        baseUrl,
+        lotId: normalizeGuid(effectiveLotId),
+        lotNumber,
+        station,
+        labelKind,
+        printer,
+        template,
+        requestedBoxes,
+        requestedCount: requestedBoxes.length,
+        foundCount: rows.length,
+        missingBoxes
+      });
+    }
+
+    if (missingBoxes.length > 0 && allowMissing !== true) {
+      logWarn("sample_print_missing_boxes", { station, lotNumber, labelKind, missingBoxes }, `[PrintSvc] ABORT sample-label missing boxes station=${station} lot=${lotNumber} kind=${labelKind} missing=${missingBoxes.join(",")}`);
+      return res.status(409).json({
+        ok: false,
+        code: "MISSING_BOXES",
+        message: "Some selected boxes were not found in Inventory. Adjust the selection and try again.",
+        lotNumber,
+        station,
+        labelKind,
+        missingBoxes
+      });
+    }
+
+    const lotLabelData = await getLotLabelData(baseUrl, effectiveLotId);
+    const printedBy = req.user?.preferred_username || req.user?.upn || "";
+    const results = [];
+    const printJobSpacingMs = getSafePrintJobSpacingMs();
+
+    logInfo(
+      "sample_print_sequence_resolved",
+      { station, lotNumber, labelKind, printer, template, requestedBoxes, printJobSpacingMs },
+      `[PrintSvc] Sample-label sequence resolved station=${station} lot=${lotNumber} kind=${labelKind}: ${requestedBoxes.join(",")}`
+    );
+
+    await enqueuePrinterWork(printer, async () => {
+      for (const box of requestedBoxes) {
+        const row = byBox.get(box);
+
+        if (!row) {
+          await writePrintLog(baseUrl, {
+            lotId: effectiveLotId,
+            inventoryId: null,
+            rfid: `${lotNumber}-B${pad2(box)}`,
+            station,
+            printedBy,
+            result: `Skipped-${labelKind}`,
+            notes: "Inventory row missing for this sample-label box number"
+          });
+          continue;
+        }
+
+        const inventoryId = row[DV_INV_ID_COL];
+        const rfid = row[DV_INV_RFID_COL] || `${lotNumber}-B${pad2(box)}`;
+        const poundsVal = row[DV_INV_WEIGHT_COL];
+        const isNoWeight = isTruthyDataverseBoolean(row[DV_INV_NOWEIGHT_COL]);
+
+        const named = {
+          lot: lotNumber,
+          firstbox: String(box),
+          box: String(box),
+          Box: String(box),
+          RFID: String(rfid),
+          rfid: String(rfid),
+          pounds: isNoWeight ? "_" : (poundsVal == null ? "" : String(poundsVal)),
+          po: lotLabelData.po,
+          prodname: lotLabelData.prodname,
+          proddesc: lotLabelData.proddesc,
+          prodnum: lotLabelData.prodnum,
+          product: lotLabelData.product,
+          color: lotLabelData.color,
+          type: lotLabelData.type,
+          tolling: lotLabelData.tolling,
+          labeltype: labelKind === "QCRetain" ? "Retain Sample" : "QC Sample",
+          sampletype: labelKind === "QCRetain" ? "Retain" : "QC",
+          erp: ""
+        };
+
+        try {
+          logEvent("sample_print_attempt", { station, lotNumber, labelKind, box, rfid, printer, template }, `[PrintSvc] -> BarTender SAMPLE PRINT kind=${labelKind} box=${box} rfid=${rfid} printer="${printer}" template="${template}"`);
+
+          const action = await bartenderPrintBTW({
+            documentPath: template,
+            printerName: printer,
+            namedDataSources: named,
+            copies: 1
+          });
+
+          const actionId = action?.Id || null;
+          const status = action?.Status || null;
+
+          logInfo("sample_print_success", { station, lotNumber, labelKind, box, rfid, printer, template, actionId, status }, `[PrintSvc] <- BarTender sample actionId=${actionId} status=${status} box=${box}`);
+          results.push({ box, rfid, pounds: named.pounds, actionId, status });
+
+          await writePrintLog(baseUrl, {
+            lotId: effectiveLotId,
+            inventoryId,
+            rfid,
+            station,
+            printedBy,
+            result: `Success-${labelKind}`,
+            notes: ""
+          });
+        } catch (e) {
+          const msg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+          logError("sample_print_failure", { station, lotNumber, labelKind, box, rfid, printer, template, message: msg }, `[PrintSvc] FAILED sample label kind=${labelKind} box=${box} lot=${lotNumber} station=${station}: ${msg}`);
+
+          await writePrintLog(baseUrl, {
+            lotId: effectiveLotId,
+            inventoryId,
+            rfid,
+            station,
+            printedBy,
+            result: `Failed-${labelKind}`,
+            notes: msg
+          });
+
+          throw e;
+        }
+
+        await sleep(printJobSpacingMs);
+      }
+    });
+
+    return res.json({
+      ok: true,
+      dryRun: false,
+      baseUrl,
+      lotId: normalizeGuid(effectiveLotId),
+      lotNumber,
+      station,
+      labelKind,
+      printer,
+      template,
+      requestedBoxes,
+      requestedCount: requestedBoxes.length,
+      printedCount: results.length,
+      missingBoxes,
+      results
+    });
+  } catch (e) {
+    logError("sample_print_request_failed", { message: e.message, bartender: e.response?.data || null, lockKey });
+    return res.status(500).json({ ok: false, message: e.message, bartender: e.response?.data || null });
+  } finally {
+    if (lockKey) activePrintJobs.delete(lockKey);
   }
 }
 
