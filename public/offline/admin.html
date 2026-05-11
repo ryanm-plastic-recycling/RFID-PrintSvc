@@ -9,18 +9,24 @@
 <body>
   <main class="page-shell">
     <header class="app-header">
-      <div class="brand-block">
-        <div class="brand-mark">PRI</div>
-        <div>
-          <p class="brand-kicker">PRI Emergency Offline Printing</p>
-          <h1>Offline Printing Admin</h1>
-        </div>
+      <div class="logo-slot logo-slot-left">
+        <img class="brand-logo pri-logo" src="/offline/assets/pri-logo.png" alt="PRI logo">
       </div>
-      <div class="header-actions">
+
+      <div class="header-title-block">
+        <p class="brand-kicker">PRI Emergency Offline Printing Admin</p>
+        <h1>Enable / disable emergency offline label printing</h1>
         <span id="headerStatus" class="status-pill status-pill-disabled">Status: Disabled</span>
-        <a class="nav-button" href="/offline">Operator Page</a>
+      </div>
+
+      <div class="logo-slot logo-slot-right">
+        <img class="brand-logo innovation-logo" src="/offline/assets/innovation-logo.png" alt="Innovation Team logo">
       </div>
     </header>
+
+    <nav class="page-nav" aria-label="Emergency offline admin navigation">
+      <a class="nav-button" href="/offline">Operator Print Page</a>
+    </nav>
 
     <section id="statusBanner" class="status-banner status-disabled">
       <div class="status-title">Emergency Offline Printing DISABLED</div>

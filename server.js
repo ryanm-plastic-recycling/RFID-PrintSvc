@@ -67,6 +67,7 @@ const CONFIG_DIR = process.env.PRINTSVC_CONFIG_DIR || "C:\\PrintSvc";
 const TEMPLATE_DIR = process.env.BARTENDER_TEMPLATE_DIR || "C:\\RFID";
 const mappingsPath = path.join(CONFIG_DIR, "mappings.json");
 const OFFLINE_PUBLIC_DIR = path.join(__dirname, "public", "offline");
+const OFFLINE_ASSETS_DIR = path.join(OFFLINE_PUBLIC_DIR, "assets");
 
 const GRAPH_DRIVE_CACHE_MS = 6 * 60 * 60 * 1000; // 6 hours
 const SMALL_UPLOAD_MAX = 4 * 1024 * 1024; // 4 MB or whatever threshold you want
@@ -1734,6 +1735,26 @@ function buildOfflinePrintAuditDetails(validated, body, overrides = {}) {
     ...overrides
   };
 }
+
+app.get("/offline/assets/pri-exterior.jpg", (req, res, next) => {
+  const jpgPath = path.join(OFFLINE_ASSETS_DIR, "pri-exterior.jpg");
+  const pngPath = path.join(OFFLINE_ASSETS_DIR, "pri-exterior.png");
+
+  if (fs.existsSync(jpgPath)) {
+    return res.sendFile(jpgPath);
+  }
+
+  if (fs.existsSync(pngPath)) {
+    return res.sendFile(pngPath);
+  }
+
+  return next();
+});
+
+app.use(
+  "/offline/assets",
+  express.static(path.join(__dirname, "public", "offline", "assets"))
+);
 
 app.get("/offline", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
