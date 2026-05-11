@@ -1482,6 +1482,61 @@ function getOfflineAllowedStations() {
   ])).map((station) => String(station).toUpperCase()));
 }
 
+const OFFLINE_STATION_DESCRIPTION_FALLBACKS = {
+  P1: "Engineering",
+  P2: "Receiving",
+  P3: "Extrusions",
+  P4: "Grinding",
+  P5: "Blending",
+  P6: "Penn",
+  P7: "South Carolina",
+  P8: "State"
+};
+
+const OFFLINE_PRINTER_CODE_DESCRIPTIONS = {
+  ENGR: "Engineering",
+  REC: "Receiving",
+  EXT: "Extrusions",
+  GRD: "Grinding",
+  BLD: "Blending",
+  PENN: "Penn",
+  SC: "South Carolina",
+  STATE: "State"
+};
+
+function getMappedStationConfig(station) {
+  return mappings.rfidStations?.[station] || mappings.stations?.[station] || {};
+}
+
+function getStationDescriptionFromMapping(station) {
+  const config = getMappedStationConfig(station);
+  const explicit =
+    config.description ||
+    config.department ||
+    config.displayName ||
+    config.label ||
+    config.name;
+
+  if (explicit) return String(explicit).trim();
+
+  const printer = String(config.printer || "").trim();
+  const parts = printer.split(/\s+/).filter(Boolean);
+  const lastToken = String(parts[parts.length - 1] || "").toUpperCase();
+
+  return OFFLINE_PRINTER_CODE_DESCRIPTIONS[lastToken] || OFFLINE_STATION_DESCRIPTION_FALLBACKS[station] || "";
+}
+
+function getOfflineStationOptions() {
+  return getOfflineAllowedStations().map((code) => {
+    const description = getStationDescriptionFromMapping(code);
+    return {
+      code,
+      description,
+      label: description ? `${code} - ${description}` : code
+    };
+  });
+}
+
 function getOfflineTemplateFamilies() {
   const templateKeys = Object.keys(mappings.templates || {});
   const preferred = ["RAW", "FG"].filter((family) => templateKeys.includes(family));
@@ -1502,6 +1557,7 @@ function buildOfflineStatusPayload() {
     maxLabels: getOfflineMaxLabels(),
     maxBoxNumber: getOfflineMaxBoxNumber(),
     allowedStations: getOfflineAllowedStations(),
+    stationOptions: getOfflineStationOptions(),
     templateFamilies,
     familyOptions: ["AUTO", ...templateFamilies]
   };

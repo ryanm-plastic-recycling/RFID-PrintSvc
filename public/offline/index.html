@@ -3,142 +3,202 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Emergency Offline Printing</title>
+  <title>PRI Emergency Offline Printing</title>
   <link rel="stylesheet" href="/offline/offline.css">
 </head>
 <body>
   <main class="page-shell">
+    <header class="app-header">
+      <div class="brand-block">
+        <div class="brand-mark">PRI</div>
+        <div>
+          <p class="brand-kicker">PRI Emergency Offline Printing</p>
+          <h1>Emergency Offline Label Printing</h1>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="headerStatus" class="status-pill status-pill-disabled">Status: Disabled</span>
+        <a class="nav-button" href="/offline/admin">Admin</a>
+      </div>
+    </header>
+
     <section id="statusBanner" class="status-banner status-disabled">
-      Emergency Offline Printing DISABLED
+      <div class="status-title">Emergency Offline Printing DISABLED</div>
+      <div id="statusMeta" class="status-message">Checking local PrintSvc status...</div>
+      <div class="status-warning">This bypasses Dataverse and must be reconciled later.</div>
     </section>
 
-    <section class="toolbar">
-      <div>
-        <h1>RFID Offline Label Printing</h1>
-        <p id="statusMeta">Checking local PrintSvc status...</p>
-      </div>
-      <a class="admin-link" href="/offline/admin">Admin</a>
+    <section class="local-url-panel">
+      <span class="label-text">Recommended local emergency URL</span>
+      <strong id="localUrl">http://192.168.50.63:7079/offline</strong>
     </section>
 
-    <form id="offlinePrintForm" class="panel">
-      <div class="grid grid-compact">
-        <label>
-          Station
-          <select name="station" id="station" required></select>
+    <form id="offlinePrintForm">
+      <section class="panel">
+        <div class="section-heading">
+          <span class="section-step">A</span>
+          <h2>Print Setup</h2>
+        </div>
+
+        <div class="grid grid-setup">
+          <label>
+            Print Station
+            <select name="station" id="station" required></select>
+          </label>
+
+          <label>
+            Label Type
+            <select name="family" id="family" required>
+              <option value="AUTO">Auto - Use lot prefix</option>
+              <option value="RAW">RAW - Raw Goods Label</option>
+              <option value="FG">FG - Finished Goods Label</option>
+            </select>
+          </label>
+
+          <label>
+            Lot Number
+            <input name="lotNumber" id="lotNumber" autocomplete="off" required>
+          </label>
+
+          <label>
+            First Box
+            <input name="firstBox" id="firstBox" type="number" min="1" value="1" required>
+          </label>
+
+          <label>
+            Last Box
+            <input name="lastBox" id="lastBox" type="number" min="1" value="1" required>
+          </label>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <span class="section-step">B</span>
+          <h2>Label Details</h2>
+        </div>
+
+        <div class="label-details-layout">
+          <div class="grid grid-details">
+            <label>
+              Material
+              <input name="material" id="material" list="materialOptions" autocomplete="off">
+            </label>
+
+            <label>
+              Color
+              <input name="color" id="color" list="colorOptions" autocomplete="off">
+            </label>
+
+            <label>
+              Format
+              <input name="format" id="format" list="formatOptions" autocomplete="off">
+            </label>
+
+            <label>
+              Product Code
+              <input name="productCode" id="productCode" autocomplete="off">
+            </label>
+
+            <label>
+              Product Name
+              <input name="productName" id="productName" autocomplete="off">
+            </label>
+
+            <label>
+              Product Description
+              <input name="productDescription" id="productDescription" autocomplete="off">
+            </label>
+
+            <label>
+              Purchase Order
+              <input name="purchaseOrder" id="purchaseOrder" autocomplete="off">
+            </label>
+
+            <label>
+              Customer
+              <input name="customer" id="customer" autocomplete="off">
+            </label>
+
+            <label>
+              Pounds
+              <input name="pounds" id="pounds" value="_">
+            </label>
+          </div>
+
+          <aside class="reference-panel" aria-label="Format Reference">
+            <h3>Format Reference</h3>
+            <dl>
+              <div><dt>Bales</dt><dd>BA</dd></div>
+              <div><dt>Mixed</dt><dd>MX</dd></div>
+              <div><dt>Parts</dt><dd>PT</dd></div>
+              <div><dt>Pellets</dt><dd>FF</dd></div>
+              <div><dt>Powder</dt><dd>PW</dd></div>
+              <div><dt>Regrind</dt><dd>RG</dd></div>
+              <div><dt>Rolls</dt><dd>RL</dd></div>
+            </dl>
+          </aside>
+        </div>
+
+        <div class="check-row">
+          <label class="checkbox-label">
+            <input name="tolling" id="tolling" type="checkbox">
+            Tolling
+          </label>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <span class="section-step">C</span>
+          <h2>Accountability</h2>
+        </div>
+
+        <div class="grid grid-wide">
+          <label>
+            Operator
+            <input name="operator" id="operator" autocomplete="name" required>
+          </label>
+
+          <label>
+            Reason
+            <input name="reason" id="reason" autocomplete="off" required>
+          </label>
+        </div>
+
+        <label class="confirm-row">
+          <input name="confirmationAccepted" id="confirmationAccepted" type="checkbox" required>
+          I understand this bypasses Dataverse and must be reconciled later.
         </label>
+      </section>
 
-        <label>
-          Family
-          <select name="family" id="family" required>
-            <option value="AUTO">Auto</option>
-            <option value="RAW">RAW</option>
-            <option value="FG">FG</option>
-          </select>
-        </label>
+      <section class="panel actions-panel">
+        <div class="section-heading">
+          <span class="section-step">D</span>
+          <h2>Preview / Actions</h2>
+        </div>
 
-        <label>
-          Lot Number
-          <input name="lotNumber" id="lotNumber" autocomplete="off" required>
-        </label>
+        <div class="preview-strip" id="previewStrip">
+          <span>Generated Count <strong id="labelCount">0</strong></span>
+          <span>First RFID <strong id="firstRfid">-</strong></span>
+          <span>Last RFID <strong id="lastRfid">-</strong></span>
+        </div>
 
-        <label>
-          First Box
-          <input name="firstBox" id="firstBox" type="number" min="1" value="1" required>
-        </label>
-
-        <label>
-          Last Box
-          <input name="lastBox" id="lastBox" type="number" min="1" value="1" required>
-        </label>
-
-        <label>
-          Pounds
-          <input name="pounds" id="pounds" value="_">
-        </label>
-      </div>
-
-      <div class="preview-strip" id="previewStrip">
-        <span>First RFID: <strong id="firstRfid">-</strong></span>
-        <span>Last RFID: <strong id="lastRfid">-</strong></span>
-        <span>Count: <strong id="labelCount">0</strong></span>
-      </div>
-
-      <div class="grid">
-        <label>
-          Material
-          <input name="material" id="material" autocomplete="off">
-        </label>
-
-        <label>
-          Color
-          <input name="color" id="color" autocomplete="off">
-        </label>
-
-        <label>
-          Format
-          <input name="format" id="format" autocomplete="off">
-        </label>
-
-        <label>
-          Product Code
-          <input name="productCode" id="productCode" autocomplete="off">
-        </label>
-
-        <label>
-          Product Name
-          <input name="productName" id="productName" autocomplete="off">
-        </label>
-
-        <label>
-          Product Description
-          <input name="productDescription" id="productDescription" autocomplete="off">
-        </label>
-
-        <label>
-          Purchase Order
-          <input name="purchaseOrder" id="purchaseOrder" autocomplete="off">
-        </label>
-
-        <label>
-          Customer
-          <input name="customer" id="customer" autocomplete="off">
-        </label>
-      </div>
-
-      <div class="check-row">
-        <label class="checkbox-label">
-          <input name="tolling" id="tolling" type="checkbox">
-          Tolling
-        </label>
-      </div>
-
-      <div class="grid grid-wide">
-        <label>
-          Operator
-          <input name="operator" id="operator" autocomplete="name" required>
-        </label>
-
-        <label>
-          Reason
-          <input name="reason" id="reason" autocomplete="off" required>
-        </label>
-      </div>
-
-      <label class="confirm-row">
-        <input name="confirmationAccepted" id="confirmationAccepted" type="checkbox" required>
-        I understand this bypasses Dataverse and must be reconciled later.
-      </label>
-
-      <div class="actions">
-        <button type="button" id="dryRunButton" class="secondary">Dry Run</button>
-        <button type="submit" id="printButton">Print</button>
-      </div>
+        <div class="actions">
+          <button type="button" id="dryRunButton" class="secondary">Dry Run</button>
+          <button type="submit" id="printButton">Print Labels</button>
+        </div>
+      </section>
     </form>
 
     <section class="result-panel">
       <h2>Result</h2>
       <pre id="resultOutput">{}</pre>
     </section>
+
+    <datalist id="materialOptions"></datalist>
+    <datalist id="colorOptions"></datalist>
+    <datalist id="formatOptions"></datalist>
   </main>
 
   <script src="/offline/offline.js"></script>

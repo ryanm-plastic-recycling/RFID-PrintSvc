@@ -156,6 +156,11 @@ test("offline emergency printing flow", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.json.enabled, false);
   assert.deepEqual(result.json.allowedStations, ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"]);
+  assert.deepEqual(result.json.stationOptions[1], {
+    code: "P2",
+    description: "Receiving",
+    label: "P2 - Receiving"
+  });
 
   result = await request("POST", "/api/offline/print-labels", { body: offlinePayload() });
   assert.equal(result.status, 403);
@@ -204,7 +209,7 @@ test("offline emergency printing flow", async () => {
   assert.equal(result.status, 400);
 
   result = await request("POST", "/api/offline/print-labels", {
-    body: offlinePayload({ family: "RAW", firstBox: 1, lastBox: 2 })
+    body: offlinePayload({ family: "RAW", firstBox: 1, lastBox: 2, formatCode: "RG" })
   });
   assert.equal(result.status, 200);
   assert.equal(result.json.printedCount, 2);

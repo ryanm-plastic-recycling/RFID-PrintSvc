@@ -3,25 +3,76 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Offline Printing Admin</title>
+  <title>PRI Offline Printing Admin</title>
   <link rel="stylesheet" href="/offline/offline.css">
 </head>
 <body>
   <main class="page-shell">
+    <header class="app-header">
+      <div class="brand-block">
+        <div class="brand-mark">PRI</div>
+        <div>
+          <p class="brand-kicker">PRI Emergency Offline Printing</p>
+          <h1>Offline Printing Admin</h1>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="headerStatus" class="status-pill status-pill-disabled">Status: Disabled</span>
+        <a class="nav-button" href="/offline">Operator Page</a>
+      </div>
+    </header>
+
     <section id="statusBanner" class="status-banner status-disabled">
-      Emergency Offline Printing DISABLED
+      <div class="status-title">Emergency Offline Printing DISABLED</div>
+      <div id="statusMeta" class="status-message">Checking local PrintSvc status...</div>
+      <div class="status-warning">This admin page controls whether operators can print during an emergency outage.</div>
     </section>
 
-    <section class="toolbar">
-      <div>
-        <h1>Offline Printing Admin</h1>
-        <p id="statusMeta">Checking local PrintSvc status...</p>
-      </div>
-      <a class="admin-link" href="/offline">User Page</a>
+    <section class="local-url-panel">
+      <span class="label-text">Operator local URL</span>
+      <strong id="offlineUrl">http://192.168.50.63:7079/offline</strong>
     </section>
 
     <section class="panel">
-      <h2>Admin Login</h2>
+      <div class="section-heading">
+        <span class="section-step">1</span>
+        <h2>Current Emergency State</h2>
+      </div>
+
+      <div class="state-grid admin-state-grid">
+        <div>
+          <span class="label-text">Current State</span>
+          <strong id="currentState">Disabled</strong>
+        </div>
+        <div>
+          <span class="label-text">Reason</span>
+          <strong id="currentReason">-</strong>
+        </div>
+        <div>
+          <span class="label-text">Enabled By</span>
+          <strong id="enabledBy">-</strong>
+        </div>
+        <div>
+          <span class="label-text">Enabled On</span>
+          <strong id="enabledOn">-</strong>
+        </div>
+        <div>
+          <span class="label-text">Disabled By</span>
+          <strong id="disabledBy">-</strong>
+        </div>
+        <div>
+          <span class="label-text">Disabled On</span>
+          <strong id="disabledOn">-</strong>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <span class="section-step">2</span>
+        <h2>Admin Login</h2>
+      </div>
+
       <form id="loginForm" class="grid grid-wide">
         <label>
           Admin Name
@@ -40,28 +91,19 @@
     </section>
 
     <section id="adminControls" class="panel hidden">
-      <h2>Emergency State</h2>
-      <div class="state-grid">
-        <div>
-          <span class="label-text">Local user URL</span>
-          <strong id="offlineUrl">/offline</strong>
-        </div>
-        <div>
-          <span class="label-text">Current state</span>
-          <strong id="currentState">Disabled</strong>
-        </div>
-        <div>
-          <span class="label-text">Current reason</span>
-          <strong id="currentReason">-</strong>
-        </div>
+      <div class="section-heading">
+        <span class="section-step">3</span>
+        <h2>Enable / Disable Operator Printing</h2>
       </div>
+
+      <p class="control-warning">Saving this setting immediately changes whether operators can use the emergency offline print page.</p>
 
       <form id="toggleForm" class="grid grid-wide">
         <label>
-          Set State
+          Emergency Printing State
           <select name="enabled" id="enabled">
-            <option value="true">Enabled</option>
-            <option value="false">Disabled</option>
+            <option value="true">Enabled - Operators can print</option>
+            <option value="false">Disabled - Operators cannot print</option>
           </select>
         </label>
 
@@ -71,7 +113,7 @@
         </label>
 
         <div class="actions compact-actions">
-          <button type="submit">Save State</button>
+          <button type="submit">Save Emergency State</button>
         </div>
       </form>
     </section>

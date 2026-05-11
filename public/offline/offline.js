@@ -1,6 +1,68 @@
 (function () {
   "use strict";
 
+  var LOCAL_OPERATOR_URL = "http://192.168.50.63:7079/offline";
+
+  var MATERIAL_OPTIONS = [
+    "ABS",
+    "ADD",
+    "BOPP",
+    "COMP",
+    "GPPS",
+    "HDPE",
+    "HIPS",
+    "HMW",
+    "KRES",
+    "LLDPE",
+    "LDPE",
+    "MSTR",
+    "MIX",
+    "MOD",
+    "OPS",
+    "PC",
+    "PCABS",
+    "PE",
+    "PET",
+    "PP",
+    "REINF",
+    "TPO"
+  ];
+
+  var COLOR_OPTIONS = [
+    "Black",
+    "Blue",
+    "Brown",
+    "Clear",
+    "Gray",
+    "Green",
+    "Mixed",
+    "Natural",
+    "Off Color",
+    "Red",
+    "Silver",
+    "Tan",
+    "White",
+    "Yellow"
+  ];
+
+  var FORMAT_OPTIONS = ["Bales", "Mixed", "Parts", "Pellets", "Powder", "Regrind", "Rolls"];
+
+  var FORMAT_CODES = {
+    Bales: "BA",
+    Mixed: "MX",
+    Parts: "PT",
+    Pellets: "FF",
+    Powder: "PW",
+    Regrind: "RG",
+    Rolls: "RL"
+  };
+
+  var FAMILY_LABELS = {
+    AUTO: "Auto - Use lot prefix",
+    RAW: "RAW - Raw Goods Label",
+    FG: "FG - Finished Goods Label"
+  };
+
   var state = {
     enabled: false,
     maxLabels: 99,
@@ -9,6 +71,7 @@
 
   var form = document.getElementById("offlinePrintForm");
   var banner = document.getElementById("statusBanner");
+  var headerStatus = document.getElementById("headerStatus");
   var statusMeta = document.getElementById("statusMeta");
   var stationSelect = document.getElementById("station");
   var familySelect = document.getElementById("family");
@@ -36,6 +99,66 @@
     return document.getElementById(id).value.trim();
   }
 
+  function populateDatalist(id, values) {
+    var list = document.getElementById(id);
+    list.innerHTML = "";
+    values.forEach(function (value) {
+      var option = document.createElement("option");
+      option.value = value;
+      list.appendChild(option);
+    });
+  }
+
+  function populateSelect(select, options) {
+    select.innerHTML = "";
+    options.forEach(function (item) {
+      var option = document.createElement("option");
+      option.value = item.value;
+      option.textContent = item.label;
+      select.appendChild(option);
+    });
+  }
+
+  function stationOptionsFromStatus(payload) {
+    if (Array.isArray(payload.stationOptions) && payload.stationOptions.length) {
+      return payload.stationOptions.map(function (item) {
+        return {
+          value: item.code,
+          label: item.label || item.code
+        };
+      });
+    }
+
+    return (payload.allowedStations || []).map(function (station) {
+      return { value: station, label: station };
+    });
+  }
+
+  function familyOptionsFromStatus(payload) {
+    return (payload.familyOptions || ["AUTO", "RAW", "FG"]).map(function (family) {
+      return {
+        value: family,
+        label: FAMILY_LABELS[family] || family
+      };
+    });
+  }
+
+  function setEnabledVisuals(enabled, reason) {
+    banner.classList.toggle("status-enabled", enabled);
+    banner.classList.toggle("status-disabled", !enabled);
+    headerStatus.classList.toggle("status-pill-enabled", enabled);
+    headerStatus.classList.toggle("status-pill-disabled", !enabled);
+
+    banner.querySelector(".status-title").textContent = enabled
+      ? "Emergency Offline Printing ENABLED"
+      : "Emergency Offline Printing DISABLED";
+
+    headerStatus.textContent = enabled ? "Status: Enabled" : "Status: Disabled";
+    statusMeta.textContent = enabled
+      ? "Emergency reason: " + (reason || "(no reason recorded)")
+      : "Offline printing is disabled. Contact an admin before printing during an outage.";
+  }
+
   function updatePreview() {
     var lotNumber = getText("lotNumber");
     var firstBox = getNumber("firstBox");
@@ -48,39 +171,22 @@
     document.getElementById("labelCount").textContent = String(count);
   }
 
-  function populateSelect(select, values, labeler) {
-    select.innerHTML = "";
-    values.forEach(function (value) {
-      var option = document.createElement("option");
-      option.value = value;
-      option.textContent = labeler ? labeler(value) : value;
-      select.appendChild(option);
-    });
-  }
-
   function applyStatus(payload) {
     state.enabled = payload.enabled === true;
     state.maxLabels = Number(payload.maxLabels || 99);
     state.maxBoxNumber = Number(payload.maxBoxNumber || 99);
 
-    banner.classList.toggle("status-enabled", state.enabled);
-    banner.classList.toggle("status-disabled", !state.enabled);
-    banner.textContent = state.enabled ? "Emergency Offline Printing ENABLED" : "Emergency Offline Printing DISABLED";
-
-    statusMeta.textContent = state.enabled
-      ? "Reason: " + (payload.reason || "(no reason recorded)")
-      : "Offline printing is disabled by default. Contact an admin to enable it during an outage.";
+    setEnabledVisuals(state.enabled, payload.reason);
 
     printButton.disabled = !state.enabled;
     dryRunButton.disabled = !state.enabled;
 
-    populateSelect(stationSelect, payload.allowedStations || []);
-    populateSelect(familySelect, payload.familyOptions || ["AUTO", "RAW", "FG"], function (value) {
-      return value === "AUTO" ? "Auto" : value;
-    });
+    populateSelect(stationSelect, stationOptionsFromStatus(payload));
+    populateSelect(familySelect, familyOptionsFromStatus(payload));
 
     document.getElementById("lastBox").max = String(state.maxBoxNumber);
     document.getElementById("firstBox").max = String(state.maxBoxNumber);
+    document.getElementById("localUrl").textContent = LOCAL_OPERATOR_URL;
     updatePreview();
   }
 
@@ -91,8 +197,12 @@
     applyStatus(payload);
   }
 
+  function getFormatCode(formatName) {
+    return FORMAT_CODES[formatName] || "";
+  }
+
   function buildPayload(dryRun) {
-    return {
+    var payload = {
       station: getText("station"),
       family: getText("family"),
       lotNumber: getText("lotNumber"),
@@ -113,6 +223,11 @@
       confirmationAccepted: document.getElementById("confirmationAccepted").checked,
       dryRun: dryRun === true
     };
+
+    var formatCode = getFormatCode(payload.format);
+    if (formatCode) payload.formatCode = formatCode;
+
+    return payload;
   }
 
   async function sendPrintRequest(dryRun) {
@@ -135,6 +250,10 @@
     return result;
   }
 
+  populateDatalist("materialOptions", MATERIAL_OPTIONS);
+  populateDatalist("colorOptions", COLOR_OPTIONS);
+  populateDatalist("formatOptions", FORMAT_OPTIONS);
+
   form.addEventListener("input", updatePreview);
   form.addEventListener("change", updatePreview);
 
@@ -148,8 +267,7 @@
   });
 
   loadStatus().catch(function (error) {
-    banner.classList.add("status-disabled");
-    banner.textContent = "Emergency Offline Printing DISABLED";
+    setEnabledVisuals(false, "");
     statusMeta.textContent = "Unable to read local offline printing status.";
     printButton.disabled = true;
     dryRunButton.disabled = true;
