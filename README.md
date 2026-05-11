@@ -3,6 +3,8 @@
 ## Overview
 RFID Print Service is a Node.js/Express API that validates Entra bearer tokens, resolves lot and inventory data from Dataverse, sends label jobs to BarTender, and uploads supporting documents into SharePoint/OpDocs. The service keeps its station/template mappings in `mappings.json` under `CONFIG_DIR`, and it now exposes operational health and metrics endpoints for monitoring.
 
+It also includes a local-only Emergency Offline Printing mode. During an internet or Dataverse outage, plant users can browse directly to the PrintSvc machine on the LAN and print RFID labels without Entra/MSAL, Dataverse, Graph, Cloudflare, or external CDN/assets. Offline printing is disabled by default and must be enabled by a local admin.
+
 ## Setup
 1. Install dependencies:
    ```bash
@@ -61,6 +63,15 @@ RFID Print Service is a Node.js/Express API that validates Entra bearer tokens, 
 - `SP_HOSTNAME`
 - `SP_SITE_PATH`
 
+### Emergency offline printing
+- `OFFLINE_PRINT_ADMIN_PASSWORD` - Local admin password. Leave unset to disable admin login.
+- `OFFLINE_PRINT_SESSION_SECRET` - Secret used to sign the short-lived offline admin cookie.
+- `OFFLINE_PRINT_STATE_FILE` - Local JSON state file. Default: `C:\PrintAgent\offline-print-state.json`.
+- `OFFLINE_PRINT_AUDIT_FILE` - Local NDJSON audit file. Default: `C:\PrintAgent\offline-print-audit.ndjson`.
+- `OFFLINE_PRINT_MAX_LABELS` - Maximum labels per offline request. Default: `99`.
+- `OFFLINE_PRINT_MAX_BOX_NUMBER` - Maximum allowed offline box number. Default: `99`.
+- `OFFLINE_PRINT_ALLOWED_HOSTS` - Comma-separated extra local hostnames/IPs allowed for offline routes.
+
 ## Run instructions
 ### Development / local run
 ```bash
@@ -112,6 +123,20 @@ Read-only summary metrics endpoint backed by Dataverse print logs. Returns:
 ### `POST /api/print`
 Protected RFID print endpoint. Accepts a lot identifier/number, station, and box range, reads inventory rows from Dataverse, resolves the BarTender template from `mappings.json`, and sends label jobs to BarTender. Existing print behavior is preserved, including dry-run mode, missing-box handling, Dataverse print logging, and lock protection against duplicate concurrent prints.
 
+### `GET /offline`
+Local-only Emergency Offline Printing page. The page uses only local HTML/CSS/JS assets served by PrintSvc. It shows whether offline printing is enabled, accepts station, family, lot, range, material/color/product fields, operator, reason, and reconciliation confirmation, and provides dry-run and print actions.
+
+### `GET /offline/admin`
+Local-only admin page used to log in and enable or disable emergency offline printing. Enabling requires a nonblank reason. State is persisted to `OFFLINE_PRINT_STATE_FILE`, and toggle events are written to the local audit log.
+
+### `GET /api/offline/status`
+Local-only status endpoint. Returns the offline enabled/disabled state, build tag, max labels, max box number, allowed stations, template families, and current emergency reason. It does not expose secrets.
+
+### `POST /api/offline/print-labels`
+Local-only offline RFID print endpoint. It does not require Entra and does not call Dataverse or Graph. It requires offline printing to be enabled, validates the box range and confirmation server-side, generates RFIDs as `{lotNumber}-B{two digit box number}`, and calls BarTender once per box unless `dryRun` is true.
+
+Offline named data sources are intentionally limited to the existing online label fields: `lot`, `firstbox`, `RFID`, `pounds`, `po`, `prodname`, `color`, `type`, `tolling`, and `erp`.
+
 ## Notes
 ### BarTender
 - Print jobs are sent through `BARTENDER_ACTIONS_URL` using the existing BarTender Actions payload.
@@ -127,6 +152,14 @@ Protected RFID print endpoint. Accepts a lot identifier/number, station, and box
 - Uploads still use app-only Graph auth with `Sites.Selected` access.
 - `GET /health/deep` verifies SharePoint readiness by acquiring a Graph token and resolving the configured site.
 - Document library resolution still honors explicit destination URLs before falling back to doc type/library-name matching.
+
+### Emergency offline reconciliation
+- Use `/offline/admin` to disable offline printing after the outage ends.
+- Review `OFFLINE_PRINT_AUDIT_FILE`, defaulting to `C:\PrintAgent\offline-print-audit.ndjson`.
+- Reconcile successful `offline_print_label` records back into Dataverse using lot number, box, RFID, station, operator, reason, and timestamp.
+- Keep the audit file with plant records for traceability.
+
+For the full runbook, see `docs/offline-emergency-printing.md`.
 
 ## Monitoring guidance
 - External monitoring should call `GET /health/deep`.

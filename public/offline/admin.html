@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Offline Printing Admin</title>
+  <link rel="stylesheet" href="/offline/offline.css">
+</head>
+<body>
+  <main class="page-shell">
+    <section id="statusBanner" class="status-banner status-disabled">
+      Emergency Offline Printing DISABLED
+    </section>
+
+    <section class="toolbar">
+      <div>
+        <h1>Offline Printing Admin</h1>
+        <p id="statusMeta">Checking local PrintSvc status...</p>
+      </div>
+      <a class="admin-link" href="/offline">User Page</a>
+    </section>
+
+    <section class="panel">
+      <h2>Admin Login</h2>
+      <form id="loginForm" class="grid grid-wide">
+        <label>
+          Admin Name
+          <input name="adminName" id="adminName" autocomplete="name" required>
+        </label>
+
+        <label>
+          Password
+          <input name="password" id="password" type="password" autocomplete="current-password" required>
+        </label>
+
+        <div class="actions compact-actions">
+          <button type="submit">Log In</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="adminControls" class="panel hidden">
+      <h2>Emergency State</h2>
+      <div class="state-grid">
+        <div>
+          <span class="label-text">Local user URL</span>
+          <strong id="offlineUrl">/offline</strong>
+        </div>
+        <div>
+          <span class="label-text">Current state</span>
+          <strong id="currentState">Disabled</strong>
+        </div>
+        <div>
+          <span class="label-text">Current reason</span>
+          <strong id="currentReason">-</strong>
+        </div>
+      </div>
+
+      <form id="toggleForm" class="grid grid-wide">
+        <label>
+          Set State
+          <select name="enabled" id="enabled">
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </label>
+
+        <label>
+          Reason
+          <input name="reason" id="toggleReason" autocomplete="off">
+        </label>
+
+        <div class="actions compact-actions">
+          <button type="submit">Save State</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="auditPanel" class="result-panel hidden">
+      <h2>Latest Audit Records</h2>
+      <pre id="auditOutput">[]</pre>
+    </section>
+
+    <section class="result-panel">
+      <h2>Result</h2>
+      <pre id="resultOutput">{}</pre>
+    </section>
+  </main>
+
+  <script src="/offline/admin.js"></script>
+</body>
+</html>

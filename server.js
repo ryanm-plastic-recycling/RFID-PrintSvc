@@ -50,13 +50,23 @@ const express = require("express");
 const axios = require("axios");
 const jwt = require("jsonwebtoken");
 const jwksClient = require("jwks-rsa");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
+const { appendOfflineAuditEvent, readLatestOfflineAuditEvents } = require("./lib/offlineAudit");
+const { readOfflineState, writeOfflineState } = require("./lib/offlineState");
+const {
+  getSourceIp,
+  requireOfflineAdminCookie,
+  requireOfflineLocalAccess,
+  setAdminCookie
+} = require("./lib/offlineSecurity");
 
 const CONFIG_DIR = process.env.PRINTSVC_CONFIG_DIR || "C:\\PrintSvc";
 const TEMPLATE_DIR = process.env.BARTENDER_TEMPLATE_DIR || "C:\\RFID";
 const mappingsPath = path.join(CONFIG_DIR, "mappings.json");
+const OFFLINE_PUBLIC_DIR = path.join(__dirname, "public", "offline");
 
 const GRAPH_DRIVE_CACHE_MS = 6 * 60 * 60 * 1000; // 6 hours
 const SMALL_UPLOAD_MAX = 4 * 1024 * 1024; // 4 MB or whatever threshold you want
@@ -189,6 +199,29 @@ function resolvePrinterAndTemplate({ station, lotNumber }) {
   const template = resolveTemplatePath(templateValue);
 
   return { family: fam, printer, template };
+}
+
+function normalizeOfflineFamily(familyRaw) {
+  const family = String(familyRaw || "AUTO").trim().toUpperCase();
+  if (!family || family === "AUTO") return "AUTO";
+  if (family === "RAW" || family === "FG") return family;
+  throw new Error(`Unknown offline label family '${familyRaw}'. Expected AUTO, RAW, or FG.`);
+}
+
+function resolvePrinterAndTemplateForFamily({ station, lotNumber, family }) {
+  const requestedFamily = normalizeOfflineFamily(family);
+  const fam = requestedFamily === "AUTO" ? getLotFamily(lotNumber) : requestedFamily;
+  const st = normalizeStation(station);
+
+  const printer = getMappedPrinterForStation(st, "rfid");
+  const templateValue = mappings.templates?.[fam]?.[st];
+
+  if (!printer) throw new Error(`Unknown RFID station/printer mapping for station='${st}'`);
+  if (!templateValue) throw new Error(`No RFID template for family='${fam}' station='${st}'`);
+
+  const template = resolveTemplatePath(templateValue);
+
+  return { requestedFamily, family: fam, printer, template };
 }
 
 function normalizeSampleLabelKind(labelKindRaw) {
@@ -1297,6 +1330,7 @@ async function uploadLargeToDrive({ driveId, pathInDrive, buffer, contentType })
  * =========================
  */
 const app = express();
+app.use(["/offline", "/api/offline"], requireOfflineLocalAccess);
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: "2mb" })); // printing + normal JSON; uploads go via multer
 
@@ -1413,6 +1447,511 @@ function enqueuePrinterWork(printerName, work) {
 
   return run;
 }
+
+/**
+ * =========================
+ * Emergency Offline Printing (local-only)
+ * =========================
+ */
+function getPositiveIntegerEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function getOfflineMaxLabels() {
+  return getPositiveIntegerEnv("OFFLINE_PRINT_MAX_LABELS", 99);
+}
+
+function getOfflineMaxBoxNumber() {
+  return getPositiveIntegerEnv("OFFLINE_PRINT_MAX_BOX_NUMBER", 99);
+}
+
+function sortStations(stations) {
+  return stations.sort((a, b) => {
+    const left = Number(String(a).replace(/^P/i, ""));
+    const right = Number(String(b).replace(/^P/i, ""));
+    if (Number.isInteger(left) && Number.isInteger(right)) return left - right;
+    return String(a).localeCompare(String(b));
+  });
+}
+
+function getOfflineAllowedStations() {
+  return sortStations(Array.from(new Set([
+    ...Object.keys(mappings.stations || {}),
+    ...Object.keys(mappings.rfidStations || {})
+  ])).map((station) => String(station).toUpperCase()));
+}
+
+function getOfflineTemplateFamilies() {
+  const templateKeys = Object.keys(mappings.templates || {});
+  const preferred = ["RAW", "FG"].filter((family) => templateKeys.includes(family));
+  const extra = templateKeys.filter((family) => !preferred.includes(family)).sort();
+  return preferred.length ? preferred : extra;
+}
+
+function buildOfflineStatusPayload() {
+  const state = readOfflineState();
+  const templateFamilies = getOfflineTemplateFamilies();
+
+  return {
+    ok: true,
+    build: BUILD_TAG,
+    enabled: state.enabled,
+    reason: state.reason,
+    state,
+    maxLabels: getOfflineMaxLabels(),
+    maxBoxNumber: getOfflineMaxBoxNumber(),
+    allowedStations: getOfflineAllowedStations(),
+    templateFamilies,
+    familyOptions: ["AUTO", ...templateFamilies]
+  };
+}
+
+function httpError(status, code, message, details = {}) {
+  const error = new Error(message);
+  error.statusCode = status;
+  error.code = code;
+  error.details = details;
+  return error;
+}
+
+function trimString(value) {
+  return String(value ?? "").trim();
+}
+
+function parseIntegerField(value) {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  const text = trimString(value);
+  if (!/^\d+$/.test(text)) return NaN;
+  return Number(text);
+}
+
+function requireNonBlankString(value, fieldName) {
+  const text = trimString(value);
+  if (!text) throw httpError(400, "VALIDATION_ERROR", `${fieldName} is required.`);
+  return text;
+}
+
+function generateOfflineRfid(lotNumber, box) {
+  return `${lotNumber}-B${pad2(box)}`;
+}
+
+function buildOfflineNamedDataSources(body, lotNumber, box) {
+  const generatedRfid = generateOfflineRfid(lotNumber, box);
+
+  return {
+    lot: lotNumber,
+    firstbox: String(box),
+    RFID: generatedRfid,
+    pounds: trimString(body.pounds) || "_",
+    po: trimString(body.purchaseOrder),
+    prodname: trimString(body.productDescription) || trimString(body.productName) || trimString(body.material),
+    color: trimString(body.color),
+    type: trimString(body.material),
+    tolling: isTruthyDataverseBoolean(body.tolling) ? "Tolling" : "",
+    erp: "OFFLINE"
+  };
+}
+
+function validateOfflinePrintPayload(body) {
+  const lotNumber = requireNonBlankString(body.lotNumber, "lotNumber");
+  const station = normalizeStation(body.station);
+  if (!station) throw httpError(400, "VALIDATION_ERROR", "station is required.");
+
+  const allowedStations = getOfflineAllowedStations();
+  if (!allowedStations.includes(station)) {
+    throw httpError(400, "VALIDATION_ERROR", `station must exist in mappings.json. Got '${station}'.`, {
+      allowedStations
+    });
+  }
+
+  let requestedFamily;
+  try {
+    requestedFamily = normalizeOfflineFamily(body.family);
+  } catch (error) {
+    throw httpError(400, "VALIDATION_ERROR", error.message);
+  }
+
+  const firstBox = parseIntegerField(body.firstBox);
+  const lastBox = parseIntegerField(body.lastBox);
+  const maxBoxNumber = getOfflineMaxBoxNumber();
+  const maxLabels = getOfflineMaxLabels();
+
+  if (!Number.isInteger(firstBox) || !Number.isInteger(lastBox)) {
+    throw httpError(400, "VALIDATION_ERROR", "firstBox and lastBox must be integers.");
+  }
+
+  if (firstBox < 1) throw httpError(400, "VALIDATION_ERROR", "firstBox must be at least 1.");
+  if (lastBox > maxBoxNumber) {
+    throw httpError(400, "VALIDATION_ERROR", `lastBox must be less than or equal to ${maxBoxNumber}.`);
+  }
+  if (firstBox > lastBox) throw httpError(400, "VALIDATION_ERROR", "firstBox must be less than or equal to lastBox.");
+
+  const requestedCount = lastBox - firstBox + 1;
+  if (requestedCount > maxLabels) {
+    throw httpError(400, "VALIDATION_ERROR", `requested label count must be less than or equal to ${maxLabels}.`, {
+      requestedCount,
+      maxLabels
+    });
+  }
+
+  const operator = requireNonBlankString(body.operator, "operator");
+  const reason = requireNonBlankString(body.reason, "reason");
+
+  if (body.confirmationAccepted !== true) {
+    throw httpError(400, "VALIDATION_ERROR", "confirmationAccepted must be true.");
+  }
+
+  const resolved = resolvePrinterAndTemplateForFamily({
+    station,
+    lotNumber,
+    family: requestedFamily
+  });
+
+  return {
+    lotNumber,
+    station,
+    requestedFamily,
+    family: resolved.family,
+    printer: resolved.printer,
+    template: resolved.template,
+    firstBox,
+    lastBox,
+    requestedCount,
+    operator,
+    reason,
+    dryRun: body.dryRun === true
+  };
+}
+
+function writeOfflineAudit(eventType, req, details = {}) {
+  try {
+    return appendOfflineAuditEvent({
+      eventType,
+      sourceIp: getSourceIp(req),
+      host: String(req.headers.host || ""),
+      ...details
+    });
+  } catch (error) {
+    logWarn("offline_audit_write_failed", { message: error.message }, `[OfflinePrint] Failed to write audit event: ${error.message}`);
+    return null;
+  }
+}
+
+function safeCompareSecret(actual, expected) {
+  const left = crypto.createHash("sha256").update(String(actual || "")).digest();
+  const right = crypto.createHash("sha256").update(String(expected || "")).digest();
+  return crypto.timingSafeEqual(left, right);
+}
+
+function offlinePreview(validated) {
+  return {
+    firstRfid: generateOfflineRfid(validated.lotNumber, validated.firstBox),
+    lastRfid: generateOfflineRfid(validated.lotNumber, validated.lastBox),
+    count: validated.requestedCount
+  };
+}
+
+function getAuditFamily(validated, body) {
+  if (validated?.family) return validated.family;
+  try {
+    return normalizeOfflineFamily(body?.family || "AUTO");
+  } catch {
+    return trimString(body?.family);
+  }
+}
+
+function buildOfflinePrintAuditDetails(validated, body, overrides = {}) {
+  return {
+    operator: validated?.operator || trimString(body?.operator),
+    reason: validated?.reason || trimString(body?.reason),
+    station: validated?.station || normalizeStation(body?.station),
+    family: getAuditFamily(validated, body),
+    printer: validated?.printer || "",
+    template: validated?.template || "",
+    lotNumber: validated?.lotNumber || trimString(body?.lotNumber),
+    firstBox: validated?.firstBox ?? parseIntegerField(body?.firstBox),
+    lastBox: validated?.lastBox ?? parseIntegerField(body?.lastBox),
+    requestedCount: validated?.requestedCount || 0,
+    printedCount: 0,
+    ok: false,
+    ...overrides
+  };
+}
+
+app.get("/offline", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  return res.sendFile(path.join(OFFLINE_PUBLIC_DIR, "index.html"));
+});
+
+app.get("/offline/admin", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  return res.sendFile(path.join(OFFLINE_PUBLIC_DIR, "admin.html"));
+});
+
+app.use("/offline", express.static(OFFLINE_PUBLIC_DIR, {
+  index: false,
+  setHeaders(res) {
+    res.setHeader("Cache-Control", "no-store");
+  }
+}));
+
+app.get("/api/offline/status", (req, res) => {
+  try {
+    return res.json(buildOfflineStatusPayload());
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: "OFFLINE_STATUS_ERROR", message: error.message });
+  }
+});
+
+app.post("/api/offline/admin/login", (req, res) => {
+  try {
+    const configuredPassword = process.env.OFFLINE_PRINT_ADMIN_PASSWORD;
+    if (!configuredPassword) {
+      return res.status(500).json({
+        ok: false,
+        error: "OFFLINE_ADMIN_CONFIG_ERROR",
+        message: "OFFLINE_PRINT_ADMIN_PASSWORD is not configured. Offline admin login is disabled."
+      });
+    }
+
+    if (!process.env.OFFLINE_PRINT_SESSION_SECRET) {
+      return res.status(500).json({
+        ok: false,
+        error: "OFFLINE_ADMIN_CONFIG_ERROR",
+        message: "OFFLINE_PRINT_SESSION_SECRET is not configured. Offline admin login is disabled."
+      });
+    }
+
+    const password = String(req.body?.password || "");
+    if (!safeCompareSecret(password, configuredPassword)) {
+      return res.status(401).json({ ok: false, error: "INVALID_PASSWORD", message: "Invalid offline admin password." });
+    }
+
+    setAdminCookie(res, { adminName: trimString(req.body?.adminName) });
+
+    return res.json({
+      ok: true,
+      message: "Offline admin login successful.",
+      expiresInSeconds: 30 * 60
+    });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: "OFFLINE_ADMIN_LOGIN_ERROR", message: error.message });
+  }
+});
+
+app.post("/api/offline/admin/toggle", requireOfflineAdminCookie, (req, res) => {
+  try {
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({ ok: false, error: "VALIDATION_ERROR", message: "enabled must be true or false." });
+    }
+
+    const adminName = requireNonBlankString(req.body?.adminName, "adminName");
+    const reason = trimString(req.body?.reason);
+    if (enabled && !reason) {
+      return res.status(400).json({ ok: false, error: "VALIDATION_ERROR", message: "reason is required when enabling emergency offline printing." });
+    }
+
+    const current = readOfflineState();
+    const now = isoNow();
+    const next = {
+      ...current,
+      enabled,
+      reason: enabled ? reason : "",
+      updatedOn: now
+    };
+
+    if (enabled) {
+      next.enabledBy = adminName;
+      next.enabledOn = now;
+    } else {
+      next.disabledBy = adminName;
+      next.disabledOn = now;
+    }
+
+    const state = writeOfflineState(next);
+    writeOfflineAudit("offline_admin_toggle", req, {
+      adminName,
+      reason,
+      enabled: state.enabled,
+      ok: true
+    });
+
+    return res.json({ ok: true, state });
+  } catch (error) {
+    writeOfflineAudit("offline_admin_toggle", req, {
+      adminName: trimString(req.body?.adminName),
+      reason: trimString(req.body?.reason),
+      enabled: req.body?.enabled === true,
+      ok: false,
+      error: error.message
+    });
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "OFFLINE_TOGGLE_ERROR", message: error.message });
+  }
+});
+
+app.get("/api/offline/admin/audit", requireOfflineAdminCookie, (req, res) => {
+  try {
+    return res.json({
+      ok: true,
+      records: readLatestOfflineAuditEvents(25)
+    });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: "OFFLINE_AUDIT_READ_ERROR", message: error.message });
+  }
+});
+
+app.post("/api/offline/print-labels", async (req, res) => {
+  let validated = null;
+  let lockKey = null;
+
+  try {
+    const state = readOfflineState();
+    if (state.enabled !== true) {
+      throw httpError(403, "OFFLINE_PRINTING_DISABLED", "Emergency offline printing is currently disabled.");
+    }
+
+    validated = validateOfflinePrintPayload(req.body || {});
+    lockKey = validated.dryRun ? null : `offline|${validated.station}|${validated.lotNumber}`;
+
+    if (lockKey) {
+      const existing = activePrintJobs.get(lockKey);
+      const now = Date.now();
+
+      if (existing && (now - existing) > PRINT_LOCK_TTL_MS) {
+        logWarn("offline_print_lock_expired", { lockKey, ageMs: now - existing }, `[OfflinePrint] Expiring stale print lock for ${lockKey} (ageMs=${now - existing})`);
+        activePrintJobs.delete(lockKey);
+      }
+
+      if (activePrintJobs.has(lockKey)) {
+        throw httpError(409, "PRINT_IN_PROGRESS", "An offline print job is already running for this station and lot.");
+      }
+
+      activePrintJobs.set(lockKey, now);
+    }
+
+    const preview = offlinePreview(validated);
+
+    if (validated.dryRun) {
+      writeOfflineAudit("offline_print_dry_run", req, buildOfflinePrintAuditDetails(validated, req.body, {
+        printedCount: 0,
+        preview,
+        ok: true
+      }));
+
+      return res.json({
+        ok: true,
+        dryRun: true,
+        station: validated.station,
+        requestedFamily: validated.requestedFamily,
+        family: validated.family,
+        printer: validated.printer,
+        template: validated.template,
+        lotNumber: validated.lotNumber,
+        firstBox: validated.firstBox,
+        lastBox: validated.lastBox,
+        requestedCount: validated.requestedCount,
+        preview
+      });
+    }
+
+    const results = [];
+    let printedCount = 0;
+    const printJobSpacingMs = getSafePrintJobSpacingMs();
+
+    await enqueuePrinterWork(validated.printer, async () => {
+      for (let box = validated.firstBox; box <= validated.lastBox; box++) {
+        const namedDataSources = buildOfflineNamedDataSources(req.body || {}, validated.lotNumber, box);
+        const rfid = namedDataSources.RFID;
+
+        try {
+          logEvent(
+            "offline_print_attempt",
+            { station: validated.station, lotNumber: validated.lotNumber, box, rfid, printer: validated.printer, template: validated.template },
+            `[OfflinePrint] -> BarTender PRINT box=${box} rfid=${rfid} printer="${validated.printer}" template="${validated.template}"`
+          );
+
+          const action = await bartenderPrintBTW({
+            documentPath: validated.template,
+            printerName: validated.printer,
+            namedDataSources,
+            copies: 1
+          });
+
+          printedCount += 1;
+          const result = {
+            box,
+            rfid,
+            actionId: action?.Id || null,
+            status: action?.Status || null
+          };
+          results.push(result);
+
+          writeOfflineAudit("offline_print_label", req, buildOfflinePrintAuditDetails(validated, req.body, {
+            box,
+            rfid,
+            printedCount: 1,
+            namedDataSources,
+            ok: true
+          }));
+        } catch (error) {
+          writeOfflineAudit("offline_print_label", req, buildOfflinePrintAuditDetails(validated, req.body, {
+            box,
+            rfid,
+            printedCount: 0,
+            namedDataSources,
+            ok: false,
+            error: formatErrorDetail(error)
+          }));
+          throw error;
+        }
+
+        await sleep(printJobSpacingMs);
+      }
+    });
+
+    writeOfflineAudit("offline_print_success", req, buildOfflinePrintAuditDetails(validated, req.body, {
+      printedCount,
+      preview,
+      ok: true
+    }));
+
+    return res.json({
+      ok: true,
+      dryRun: false,
+      station: validated.station,
+      requestedFamily: validated.requestedFamily,
+      family: validated.family,
+      printer: validated.printer,
+      template: validated.template,
+      lotNumber: validated.lotNumber,
+      firstBox: validated.firstBox,
+      lastBox: validated.lastBox,
+      requestedCount: validated.requestedCount,
+      printedCount,
+      preview,
+      results
+    });
+  } catch (error) {
+    if (error.code !== "PRINT_IN_PROGRESS") {
+      writeOfflineAudit("offline_print_failure", req, buildOfflinePrintAuditDetails(validated, req.body || {}, {
+        ok: false,
+        error: formatErrorDetail(error)
+      }));
+    }
+
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      error: error.code || "OFFLINE_PRINT_FAILED",
+      message: error.message,
+      details: error.details || undefined,
+      bartender: error.response?.data || undefined
+    });
+  } finally {
+    if (lockKey) activePrintJobs.delete(lockKey);
+  }
+});
 
 app.post("/api/print", requireBearerToken, requireValidToken, handlePrintLot);
 app.post("/print/lot", requireBearerToken, requireValidToken, handlePrintLot);
@@ -2029,6 +2568,17 @@ async function handlePrintLot(req, res) {
   }
 }
 
-app.listen(Number(PORT), "0.0.0.0", () => {
-  logInfo("service_listening", { port: Number(PORT), host: "0.0.0.0" }, `PrintSvc listening on http://0.0.0.0:${PORT}`);
-});
+if (require.main === module) {
+  app.listen(Number(PORT), "0.0.0.0", () => {
+    logInfo("service_listening", { port: Number(PORT), host: "0.0.0.0" }, `PrintSvc listening on http://0.0.0.0:${PORT}`);
+  });
+}
+
+module.exports = {
+  app,
+  buildOfflineNamedDataSources,
+  generateOfflineRfid,
+  normalizeOfflineFamily,
+  resolvePrinterAndTemplate,
+  resolvePrinterAndTemplateForFamily
+};

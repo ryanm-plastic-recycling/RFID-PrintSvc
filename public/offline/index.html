@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Emergency Offline Printing</title>
+  <link rel="stylesheet" href="/offline/offline.css">
+</head>
+<body>
+  <main class="page-shell">
+    <section id="statusBanner" class="status-banner status-disabled">
+      Emergency Offline Printing DISABLED
+    </section>
+
+    <section class="toolbar">
+      <div>
+        <h1>RFID Offline Label Printing</h1>
+        <p id="statusMeta">Checking local PrintSvc status...</p>
+      </div>
+      <a class="admin-link" href="/offline/admin">Admin</a>
+    </section>
+
+    <form id="offlinePrintForm" class="panel">
+      <div class="grid grid-compact">
+        <label>
+          Station
+          <select name="station" id="station" required></select>
+        </label>
+
+        <label>
+          Family
+          <select name="family" id="family" required>
+            <option value="AUTO">Auto</option>
+            <option value="RAW">RAW</option>
+            <option value="FG">FG</option>
+          </select>
+        </label>
+
+        <label>
+          Lot Number
+          <input name="lotNumber" id="lotNumber" autocomplete="off" required>
+        </label>
+
+        <label>
+          First Box
+          <input name="firstBox" id="firstBox" type="number" min="1" value="1" required>
+        </label>
+
+        <label>
+          Last Box
+          <input name="lastBox" id="lastBox" type="number" min="1" value="1" required>
+        </label>
+
+        <label>
+          Pounds
+          <input name="pounds" id="pounds" value="_">
+        </label>
+      </div>
+
+      <div class="preview-strip" id="previewStrip">
+        <span>First RFID: <strong id="firstRfid">-</strong></span>
+        <span>Last RFID: <strong id="lastRfid">-</strong></span>
+        <span>Count: <strong id="labelCount">0</strong></span>
+      </div>
+
+      <div class="grid">
+        <label>
+          Material
+          <input name="material" id="material" autocomplete="off">
+        </label>
+
+        <label>
+          Color
+          <input name="color" id="color" autocomplete="off">
+        </label>
+
+        <label>
+          Format
+          <input name="format" id="format" autocomplete="off">
+        </label>
+
+        <label>
+          Product Code
+          <input name="productCode" id="productCode" autocomplete="off">
+        </label>
+
+        <label>
+          Product Name
+          <input name="productName" id="productName" autocomplete="off">
+        </label>
+
+        <label>
+          Product Description
+          <input name="productDescription" id="productDescription" autocomplete="off">
+        </label>
+
+        <label>
+          Purchase Order
+          <input name="purchaseOrder" id="purchaseOrder" autocomplete="off">
+        </label>
+
+        <label>
+          Customer
+          <input name="customer" id="customer" autocomplete="off">
+        </label>
+      </div>
+
+      <div class="check-row">
+        <label class="checkbox-label">
+          <input name="tolling" id="tolling" type="checkbox">
+          Tolling
+        </label>
+      </div>
+
+      <div class="grid grid-wide">
+        <label>
+          Operator
+          <input name="operator" id="operator" autocomplete="name" required>
+        </label>
+
+        <label>
+          Reason
+          <input name="reason" id="reason" autocomplete="off" required>
+        </label>
+      </div>
+
+      <label class="confirm-row">
+        <input name="confirmationAccepted" id="confirmationAccepted" type="checkbox" required>
+        I understand this bypasses Dataverse and must be reconciled later.
+      </label>
+
+      <div class="actions">
+        <button type="button" id="dryRunButton" class="secondary">Dry Run</button>
+        <button type="submit" id="printButton">Print</button>
+      </div>
+    </form>
+
+    <section class="result-panel">
+      <h2>Result</h2>
+      <pre id="resultOutput">{}</pre>
+    </section>
+  </main>
+
+  <script src="/offline/offline.js"></script>
+</body>
+</html>
