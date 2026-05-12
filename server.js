@@ -400,16 +400,19 @@ const DV_LOT_ENTITYSET = process.env.DV_LOT_ENTITYSET || "rm_lots";
 const DV_INVENTORY_ENTITYSET = process.env.DV_INVENTORY_ENTITYSET || "rm_inventories";
 const DV_PRINTLOG_ENTITYSET = process.env.DV_PRINTLOG_ENTITYSET || "rm_printlogs";
 const DV_PRODUCT_ENTITYSET = process.env.DV_PRODUCT_ENTITYSET || "rm_products";
+const DV_MACHINE_ENTITYSET = process.env.DV_MACHINE_ENTITYSET || "rm_machines";
 
 const DV_LOTNUMBER_COL = process.env.DV_LOTNUMBER_COL || "rm_lotnumber";
 const DV_LOT_PURCHASEORDER_COL = process.env.DV_LOT_PURCHASEORDER_COL || "rm_purchaseorder";
 const DV_LOT_PRODUCTLOOKUP_COL = process.env.DV_LOT_PRODUCTLOOKUP_COL || "rm_product";
+const DV_LOT_MACHINELOOKUP_COL = process.env.DV_LOT_MACHINELOOKUP_COL || "rm_machine";
 const DV_LOT_COLORTEXT_COL = process.env.DV_LOT_COLORTEXT_COL || "crb9d_colortext";
 const DV_LOT_MATERIALSHORTTEXT_COL = process.env.DV_LOT_MATERIALSHORTTEXT_COL || "rm_materialshorttext";
 const DV_LOT_TOLLING_COL = process.env.DV_LOT_TOLLING_COL || "rm_tolling";
 const DV_PRODUCT_NAME_COL = process.env.DV_PRODUCT_NAME_COL || "rm_productname";
 const DV_PRODUCT_CODE_COL = process.env.DV_PRODUCT_CODE_COL || "rm_productcode";
 const DV_PRODUCT_LABELDESCRIPTION_COL = process.env.DV_PRODUCT_LABELDESCRIPTION_COL || "rm_productlabeldescription";
+const DV_MACHINE_NAME_COL = process.env.DV_MACHINE_NAME_COL || "rm_machinename";
 
 const DV_INV_LOTLOOKUP_COL = process.env.DV_INV_LOTLOOKUP_COL || "rm_lot";
 const DV_INV_BOX_COL = process.env.DV_INV_BOX_COL || "rm_box";
@@ -462,24 +465,29 @@ function isTruthyDataverseBoolean(value) {
   return normalized === "true" || normalized === "yes" || normalized === "1";
 }
 
-async function getLotLabelData(baseUrl, lotId) {
+async function getLotLabelData(baseUrl, lotId, options = {}) {
   const id = normalizeGuid(lotId);
   if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error(`Invalid lotId GUID: ${lotId}`);
 
+  const includeMachine = options?.includeMachine === true;
   const lotProductLookupValueCol = `_${DV_LOT_PRODUCTLOOKUP_COL}_value`;
+  const lotMachineLookupValueCol = `_${DV_LOT_MACHINELOOKUP_COL}_value`;
   const selectCols = [
     DV_LOT_PURCHASEORDER_COL,
     DV_LOT_COLORTEXT_COL,
     DV_LOT_MATERIALSHORTTEXT_COL,
     DV_LOT_TOLLING_COL,
-    lotProductLookupValueCol
+    lotProductLookupValueCol,
+    ...(includeMachine ? [lotMachineLookupValueCol] : [])
   ].join(",");
 
   const lot = await dvGet(baseUrl, `/api/data/v9.2/${DV_LOT_ENTITYSET}(${id})?$select=${selectCols}`);
 
   const productId = lot?.[lotProductLookupValueCol];
+  const machineId = includeMachine ? lot?.[lotMachineLookupValueCol] : null;
   let productCode = "";
   let productLabelDescription = "";
+  let machineName = "";
 
   if (productId) {
     const productSelectCols = [
@@ -496,6 +504,15 @@ async function getLotLabelData(baseUrl, lotId) {
     productLabelDescription = product?.[DV_PRODUCT_LABELDESCRIPTION_COL] || "";
   }
 
+  if (machineId) {
+    const machine = await dvGet(
+      baseUrl,
+      `/api/data/v9.2/${DV_MACHINE_ENTITYSET}(${normalizeGuid(machineId)})?$select=${DV_MACHINE_NAME_COL}`
+    );
+
+    machineName = machine?.[DV_MACHINE_NAME_COL] || "";
+  }
+
   const materialShortText = toPrintString(lot?.[DV_LOT_MATERIALSHORTTEXT_COL]);
 
   return {
@@ -506,7 +523,8 @@ async function getLotLabelData(baseUrl, lotId) {
     product: materialShortText,
     color: toPrintString(lot?.[DV_LOT_COLORTEXT_COL]),
     type: materialShortText,
-    tolling: isTruthyDataverseBoolean(lot?.[DV_LOT_TOLLING_COL]) ? "Tolling" : ""
+    tolling: isTruthyDataverseBoolean(lot?.[DV_LOT_TOLLING_COL]) ? "Tolling" : "",
+    machine: toPrintString(machineName)
   };
 }
 
@@ -2231,7 +2249,7 @@ async function handlePrintSampleLabels(req, res) {
       });
     }
 
-    const lotLabelData = await getLotLabelData(baseUrl, effectiveLotId);
+    const lotLabelData = await getLotLabelData(baseUrl, effectiveLotId, { includeMachine: true });
     const printedBy = req.user?.preferred_username || req.user?.upn || "";
     const results = [];
     const printJobSpacingMs = getSafePrintJobSpacingMs();
@@ -2280,6 +2298,7 @@ async function handlePrintSampleLabels(req, res) {
           color: lotLabelData.color,
           type: lotLabelData.type,
           tolling: lotLabelData.tolling,
+          machine: lotLabelData.machine,
           labeltype: labelKind === "QCRetain" ? "Retain Sample" : "QC Sample",
           sampletype: labelKind === "QCRetain" ? "Retain" : "QC",
           erp: ""
