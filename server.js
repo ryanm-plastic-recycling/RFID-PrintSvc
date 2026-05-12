@@ -138,6 +138,8 @@ function loadMappingsFile() {
 }
 
 const mappings = loadMappingsFile();
+const QC_SAMPLE_POUNDS_TEMPLATE_FILENAME = process.env.QC_SAMPLE_POUNDS_TEMPLATE_FILENAME || process.env.QC_SAMPLE_POUNDS_TEMPLATE || "QCSamplePounds-P3.btw";
+const QC_SAMPLE_POUNDS_DEFAULT_LABELS = ["5000", "15000", "25000", "35000", "Last Box"];
 
 function getLotFamily(lotNumber) {
   const prefix = (lotNumber || "").trim().substring(0, 2).toUpperCase();
@@ -242,12 +244,18 @@ function normalizeSampleStation(stationRaw) {
   return String(aliases[raw] || raw).trim().toUpperCase();
 }
 
-function resolvePrinterAndSampleTemplate({ station, labelKind }) {
+function resolvePrinterAndSampleTemplate({ station, labelKind, byPounds = false }) {
   const st = normalizeSampleStation(station);
   const kind = normalizeSampleLabelKind(labelKind);
 
+  if (byPounds && kind !== "QCSample") {
+    throw new Error("By-pounds sample labels are only supported for QCSample.");
+  }
+
   const printer = getMappedPrinterForStation(st, "sample", kind);
-  const templateValue = mappings.templates?.[kind]?.[st];
+  const templateValue = byPounds
+    ? QC_SAMPLE_POUNDS_TEMPLATE_FILENAME
+    : mappings.templates?.[kind]?.[st];
 
   if (!printer) throw new Error(`No QC/Retain printer mapping for labelKind='${kind}' station='${st}'. Add mappings.sampleStations.${st}.printer in mappings.json.`);
   if (!templateValue) throw new Error(`No sample-label template for labelKind='${kind}' station='${st}'`);
@@ -2149,6 +2157,50 @@ function normalizeRequestedBoxesFromBody(body) {
   return out;
 }
 
+function isSampleByPoundsMode(body) {
+  const rawMode = String(body?.sampleMode ?? body?.mode ?? "").trim().toLowerCase();
+  return body?.byPounds === true || body?.sampleByPounds === true || rawMode === "pounds" || rawMode === "bypounds" || rawMode === "by-pounds";
+}
+
+function normalizeSamplePoundLabelValue(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+
+  if (/^last\s*box$/i.test(raw)) return "Last Box";
+
+  const numericText = raw.replace(/[,\s]/g, "");
+  if (/^\d+$/.test(numericText)) {
+    const n = Number(numericText);
+    if (Number.isInteger(n) && n > 0) return String(n);
+  }
+
+  return raw.slice(0, 64);
+}
+
+function normalizeRequestedPoundSampleLabelsFromBody(body) {
+  const rawLabels = Array.isArray(body?.poundLabels)
+    ? body.poundLabels
+    : Array.isArray(body?.samplePoundLabels)
+      ? body.samplePoundLabels
+      : Array.isArray(body?.poundMilestones)
+        ? body.poundMilestones
+        : [];
+
+  const source = rawLabels.length ? rawLabels : QC_SAMPLE_POUNDS_DEFAULT_LABELS;
+  const seen = new Set();
+  const out = [];
+
+  for (const value of source) {
+    const normalized = normalizeSamplePoundLabelValue(value);
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+
+  return out;
+}
+
 async function handlePrintSampleLabels(req, res) {
   let lockKey = null;
 
@@ -2179,15 +2231,27 @@ async function handlePrintSampleLabels(req, res) {
       body.lotRef ??
       null;
 
-    const requestedBoxes = normalizeRequestedBoxesFromBody(body);
+    const byPounds = isSampleByPoundsMode(body);
+    const requestedPoundLabels = byPounds ? normalizeRequestedPoundSampleLabelsFromBody(body) : [];
+    const requestedBoxes = byPounds ? [] : normalizeRequestedBoxesFromBody(body);
     const allowMissing = body.allowMissing === true;
     const dryRun = body.dryRun === true;
 
-    if (!station || (!lotIdFromBody && !lotNumberFromBody) || !requestedBoxes.length) {
+    if (byPounds && labelKind !== "QCSample") {
       return res.status(400).json({
         ok: false,
-        error: "station, lotId/lotNumber, labelKind, and boxes are required",
-        got: { stationRaw, stationNormalized: station, lotId: lotIdFromBody, lotNumber: lotNumberFromBody, labelKind, boxes: body.boxes }
+        error: "By-pounds sample labels are only supported for QCSample.",
+        got: { labelKind, byPounds }
+      });
+    }
+
+    if (!station || (!lotIdFromBody && !lotNumberFromBody) || (!byPounds && !requestedBoxes.length) || (byPounds && !requestedPoundLabels.length)) {
+      return res.status(400).json({
+        ok: false,
+        error: byPounds
+          ? "station, lotId/lotNumber, labelKind, and poundLabels are required"
+          : "station, lotId/lotNumber, labelKind, and boxes are required",
+        got: { stationRaw, stationNormalized: station, lotId: lotIdFromBody, lotNumber: lotNumberFromBody, labelKind, boxes: body.boxes, byPounds, poundLabels: requestedPoundLabels }
       });
     }
 
@@ -2199,9 +2263,9 @@ async function handlePrintSampleLabels(req, res) {
     }
 
     const lotNumber = await getLotNumberById(baseUrl, effectiveLotId);
-    const { printer, template } = resolvePrinterAndSampleTemplate({ station, labelKind });
+    const { printer, template } = resolvePrinterAndSampleTemplate({ station, labelKind, byPounds });
 
-    lockKey = `${station}|${normalizeGuid(effectiveLotId)}|${labelKind}`;
+    lockKey = `${station}|${normalizeGuid(effectiveLotId)}|${labelKind}${byPounds ? "|pounds" : ""}`;
     const existing = activePrintJobs.get(lockKey);
     const now = Date.now();
 
@@ -2222,6 +2286,129 @@ async function handlePrintSampleLabels(req, res) {
     }
 
     if (!dryRun) activePrintJobs.set(lockKey, now);
+
+    if (byPounds) {
+      if (dryRun === true) {
+        return res.json({
+          ok: true,
+          dryRun: true,
+          baseUrl,
+          lotId: normalizeGuid(effectiveLotId),
+          lotNumber,
+          station,
+          labelKind,
+          byPounds: true,
+          printer,
+          template,
+          requestedPoundLabels,
+          requestedCount: requestedPoundLabels.length,
+          missingBoxes: []
+        });
+      }
+
+      const lotLabelData = await getLotLabelData(baseUrl, effectiveLotId, { includeMachine: true, includeCompany: true });
+      const printedBy = req.user?.preferred_username || req.user?.upn || "";
+      const results = [];
+      const printJobSpacingMs = getSafePrintJobSpacingMs();
+
+      logInfo(
+        "sample_print_pounds_sequence_resolved",
+        { station, lotNumber, labelKind, printer, template, requestedPoundLabels, printJobSpacingMs },
+        `[PrintSvc] Sample-label by-pounds sequence resolved station=${station} lot=${lotNumber} kind=${labelKind}: ${requestedPoundLabels.join(",")}`
+      );
+
+      await enqueuePrinterWork(printer, async () => {
+        for (const poundLabel of requestedPoundLabels) {
+          const labelValue = String(poundLabel);
+          const logRfid = `${lotNumber}-${labelValue.replace(/\s+/g, "")}`;
+
+          const named = {
+            lot: lotNumber,
+            firstbox: labelValue,
+            box: labelValue,
+            Box: labelValue,
+            RFID: "",
+            rfid: "",
+            pounds: labelValue,
+            po: lotLabelData.po,
+            prodname: lotLabelData.prodname,
+            proddesc: lotLabelData.proddesc,
+            prodnum: lotLabelData.prodnum,
+            product: lotLabelData.product,
+            color: lotLabelData.color,
+            type: lotLabelData.type,
+            tolling: lotLabelData.tolling,
+            company: lotLabelData.company,
+            machine: lotLabelData.machine,
+            labeltype: "QC Sample",
+            sampletype: "QC",
+            erp: ""
+          };
+
+          try {
+            logEvent("sample_print_pounds_attempt", { station, lotNumber, labelKind, poundLabel: labelValue, printer, template }, `[PrintSvc] -> BarTender SAMPLE POUNDS PRINT kind=${labelKind} label=${labelValue} printer="${printer}" template="${template}"`);
+
+            const action = await bartenderPrintBTW({
+              documentPath: template,
+              printerName: printer,
+              namedDataSources: named,
+              copies: 1
+            });
+
+            const actionId = action?.Id || null;
+            const status = action?.Status || null;
+
+            logInfo("sample_print_pounds_success", { station, lotNumber, labelKind, poundLabel: labelValue, printer, template, actionId, status }, `[PrintSvc] <- BarTender sample-pounds actionId=${actionId} status=${status} label=${labelValue}`);
+            results.push({ box: labelValue, poundLabel: labelValue, rfid: "", pounds: labelValue, actionId, status });
+
+            await writePrintLog(baseUrl, {
+              lotId: effectiveLotId,
+              inventoryId: null,
+              rfid: logRfid,
+              station,
+              printedBy,
+              result: `Success-${labelKind}-Pounds`,
+              notes: `By-pounds sample label: ${labelValue}`
+            });
+          } catch (e) {
+            const msg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+            logError("sample_print_pounds_failure", { station, lotNumber, labelKind, poundLabel: labelValue, printer, template, message: msg }, `[PrintSvc] FAILED sample pounds label kind=${labelKind} label=${labelValue} lot=${lotNumber} station=${station}: ${msg}`);
+
+            await writePrintLog(baseUrl, {
+              lotId: effectiveLotId,
+              inventoryId: null,
+              rfid: logRfid,
+              station,
+              printedBy,
+              result: `Failed-${labelKind}-Pounds`,
+              notes: msg
+            });
+
+            throw e;
+          }
+
+          await sleep(printJobSpacingMs);
+        }
+      });
+
+      return res.json({
+        ok: true,
+        dryRun: false,
+        baseUrl,
+        lotId: normalizeGuid(effectiveLotId),
+        lotNumber,
+        station,
+        labelKind,
+        byPounds: true,
+        printer,
+        template,
+        requestedPoundLabels,
+        requestedCount: requestedPoundLabels.length,
+        printedCount: results.length,
+        missingBoxes: [],
+        results
+      });
+    }
 
     const firstBox = Math.min(...requestedBoxes);
     const lastBox = Math.max(...requestedBoxes);
