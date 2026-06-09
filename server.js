@@ -168,7 +168,7 @@ const DIRECT_ZPL_SUPPORTED_PILOT_SCOPES = Object.freeze({
   P5: Object.freeze(["RAW", "FG"]),
   P6: Object.freeze(["RAW", "FG"]),
   P7: Object.freeze(["RAW", "FG"]),
-  P8: Object.freeze(["RAW", "FG"])
+  P8: Object.freeze(["RAW", "FG", "SAMPLE", "RETAIN", "SAMPLE_POUNDS"])
 });
 
 /**
