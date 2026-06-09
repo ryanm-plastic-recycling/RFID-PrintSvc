@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PRI Direct-ZPL Template Lab</title>
+  <link rel="stylesheet" href="/offline/offline.css">
+</head>
+<body>
+  <main class="page-shell template-lab-shell">
+    <header class="app-header">
+      <div class="logo-slot logo-slot-left">
+        <img class="brand-logo pri-logo" src="/offline/assets/pri-logo.png" alt="PRI logo">
+      </div>
+
+      <div class="header-title-block">
+        <p class="brand-kicker">PRI Template Lab</p>
+        <h1>Direct-ZPL Template Preview</h1>
+        <span id="headerStatus" class="status-pill status-pill-disabled">Status: Loading</span>
+      </div>
+
+      <div class="logo-slot logo-slot-right">
+        <img class="brand-logo innovation-logo" src="/offline/assets/innovation-logo.png" alt="Innovation Team logo">
+      </div>
+    </header>
+
+    <nav class="page-nav" aria-label="Template lab navigation">
+      <a class="nav-button" href="/offline">Operator Print Page</a>
+      <a class="nav-button" href="/offline/admin">Admin Controls</a>
+      <a class="nav-button" href="/offline/print-health">Print Health</a>
+    </nav>
+
+    <section id="statusBanner" class="status-banner status-disabled">
+      <div id="statusTitle" class="status-title">Loading Template Lab</div>
+      <div id="statusMeta" class="status-message">Fetching approved direct-ZPL templates and calibration profiles...</div>
+      <div class="status-warning">Template test sends bypass the production queue and require explicit confirmation.</div>
+    </section>
+
+    <div class="template-lab-workbench">
+      <div class="template-lab-left">
+        <section class="panel">
+          <div class="section-heading">
+            <span class="section-step">A</span>
+            <h2>Live Preview Setup</h2>
+          </div>
+
+          <details class="lab-accordion" open>
+            <summary>Sample Data</summary>
+          <form id="templateForm" class="grid lab-form-grid">
+            <label class="lab-span-2">
+              Template
+              <select id="template" name="template" required></select>
+            </label>
+            <label class="lab-span-2">
+              Calibration Profile
+              <select id="profileKey" name="profileKey" required></select>
+            </label>
+            <label>
+              Lot Number
+              <input id="lotNumber" name="lotNumber" value="PT000086" autocomplete="off">
+            </label>
+            <label>
+              Box Number
+              <input id="boxNumber" name="boxNumber" value="52" autocomplete="off">
+            </label>
+            <label class="lab-span-2">
+              RFID (optional)
+              <input id="rfid" name="rfid" placeholder="Generated from lot + box when blank" autocomplete="off">
+            </label>
+            <label>
+              Pounds
+              <input id="pounds" name="pounds" value="_" autocomplete="off">
+            </label>
+            <label>
+              Material Type
+              <input id="materialType" name="materialType" value="POLYPROPYLENE" autocomplete="off">
+            </label>
+            <label>
+              Color
+              <input id="color" name="color" value="ULTRAMARINEBLUE" autocomplete="off">
+            </label>
+            <label>
+              Tolling
+              <input id="tolling" name="tolling" value="" autocomplete="off">
+            </label>
+            <label>
+              PO
+              <input id="po" name="po" value="PO12345" autocomplete="off">
+            </label>
+            <label class="lab-span-3">
+              Product Description
+              <input id="productDescription" name="productDescription" value="Template Lab Product" autocomplete="off">
+            </label>
+            <label class="lab-span-2">
+              Printer IP
+              <input id="printerIp" name="printerIp" value="192.168.50.239" autocomplete="off">
+            </label>
+            <label>
+              Port
+              <input id="printerPort" name="printerPort" value="9100" autocomplete="off">
+            </label>
+          </form>
+          </details>
+
+          <div class="actions sticky-actions">
+            <button id="renderButton" type="button">Render / Re-render</button>
+            <button id="downloadButton" class="secondary" type="button" disabled>Download ZPL</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <span class="section-step">B</span>
+            <h2>Visual Tuning</h2>
+          </div>
+
+          <details class="tuning-card lab-accordion" open>
+            <summary>Whole Label Calibration</summary>
+            <p class="field-help">Scale and offset are preview/test calibration values. They shift and scale boxes, field origins, QR, logo, and simple font/field-block commands for Template Lab only. They do not change production printing until a template/profile is deliberately deployed.</p>
+            <div class="grid lab-tuning-grid">
+              <label class="tune-control" title="Horizontal whole-label multiplier for preview/test rendering only. 1.00 means no horizontal scale.">Scale X<input id="scaleX" type="number" step="0.01" min="0.1"><input id="scaleXRange" type="range" min="0.80" max="1.20" step="0.01"></label>
+              <label class="tune-control" title="Vertical whole-label multiplier for preview/test rendering only. 1.00 means no vertical scale.">Scale Y<input id="scaleY" type="number" step="0.01" min="0.1"><input id="scaleYRange" type="range" min="0.80" max="1.20" step="0.01"></label>
+              <label class="tune-control" title="Horizontal dot offset applied to field origins in preview/test rendering only. Positive moves right.">Offset X<input id="offsetX" type="number" step="1"><input id="offsetXRange" type="range" min="-120" max="120" step="1"></label>
+              <label class="tune-control" title="Vertical dot offset applied to field origins in preview/test rendering only. Positive moves down.">Offset Y<input id="offsetY" type="number" step="1"><input id="offsetYRange" type="range" min="-120" max="120" step="1"></label>
+            </div>
+          </details>
+
+          <details class="tuning-card lab-accordion" open>
+            <summary>QR</summary>
+            <p class="field-help">QR data always remains the lot number only. X/Y tune the native ^BQN origin; magnification controls printed module size.</p>
+            <div class="grid lab-tuning-grid">
+              <label class="tune-control" title="QR origin X in printer dots.">QR X<input id="qrX" type="number" step="1"><input id="qrXRange" type="range" min="0" max="1050" step="1"></label>
+              <label class="tune-control" title="QR origin Y in printer dots.">QR Y<input id="qrY" type="number" step="1"><input id="qrYRange" type="range" min="0" max="1450" step="1"></label>
+              <label class="tune-control" title="Native ZPL QR magnification. Larger values make the QR physically larger.">QR Magnification<input id="qrMagnification" type="number" step="1" min="1"><input id="qrMagnificationRange" type="range" min="1" max="10" step="1"></label>
+            </div>
+          </details>
+
+          <details class="tuning-card lab-accordion" open>
+            <summary>Logo</summary>
+            <p class="field-help">Logo controls apply to the static ^GFA logo where enabled. If a profile has no logo, these controls are disabled. Use physical proof prints to judge final logo quality.</p>
+            <div class="grid lab-tuning-grid">
+              <label class="tune-control" title="Static logo origin X in printer dots.">Logo X<input id="logoX" type="number" step="1"><input id="logoXRange" type="range" min="0" max="1050" step="1"></label>
+              <label class="tune-control" title="Static logo origin Y in printer dots.">Logo Y<input id="logoY" type="number" step="1"><input id="logoYRange" type="range" min="0" max="1450" step="1"></label>
+              <label class="tune-control" title="Scales the current 1-bit logo graphic in preview/test rendering. Scaling up can look pixelated.">Logo Scale<input id="logoScale" type="number" step="0.1" min="0.25"><input id="logoScaleRange" type="range" min="0.25" max="4" step="0.05"></label>
+              <label title="Explicit rendered logo width in printer dots. Overrides scale when set.">Logo Width Dots<input id="logoWidthDots" type="number" step="1" min="1"></label>
+              <label title="Explicit rendered logo height in printer dots. Overrides scale when set.">Logo Height Dots<input id="logoHeightDots" type="number" step="1" min="1"></label>
+            </div>
+          </details>
+
+          <details class="tuning-subsection lab-accordion" open>
+            <summary>Field Fit</summary>
+            <p class="field-help">H = font height dots, W = font width dots. Large/medium/small/min are selected by text length; box width controls ^FB; no wrap/no hyphenation is enforced for constrained fields.</p>
+            <div id="fieldFitControls" class="field-fit-controls"></div>
+          </details>
+
+          <details class="tuning-subsection lab-accordion">
+            <summary>Product Description & Field Origins</summary>
+            <p class="field-help">Field X/Y overrides move the nearest fitted-field origin before that placeholder. Use product description X/Y to pull long descriptions back toward the left edge of their box.</p>
+            <div class="grid lab-tuning-grid">
+              <label title="Move fitted color field origin X in printer dots.">Color X<input id="colorX" type="number" step="1"></label>
+              <label title="Move fitted color field origin Y in printer dots.">Color Y<input id="colorY" type="number" step="1"></label>
+              <label title="Move fitted material field origin X in printer dots.">Material X<input id="materialTypeX" type="number" step="1"></label>
+              <label title="Move fitted material field origin Y in printer dots.">Material Y<input id="materialTypeY" type="number" step="1"></label>
+              <label title="Move tolling field origin X in printer dots. Tolling prints only when a value is present.">Tolling X<input id="tollingX" type="number" step="1"></label>
+              <label title="Move tolling field origin Y in printer dots. Tolling prints only when a value is present.">Tolling Y<input id="tollingY" type="number" step="1"></label>
+              <label title="Move product description origin X in printer dots.">Product Description X<input id="productDescriptionX" type="number" step="1"></label>
+              <label title="Move product description origin Y in printer dots.">Product Description Y<input id="productDescriptionY" type="number" step="1"></label>
+            </div>
+          </details>
+
+          <details class="tuning-subsection lab-accordion" open>
+            <summary>Test Print / Export</summary>
+            <p class="field-help">Export updates the JSON below. Save writes lab-only profile overrides to C:\PrintSvc\template-lab-profiles.json unless ZPL_TEMPLATE_LAB_PROFILE_PATH overrides it. Saved lab profiles affect preview/test rendering only.</p>
+            <textarea id="profileJson" class="profile-json" spellcheck="false"></textarea>
+            <div id="profileSaveResult" class="muted-line"></div>
+            <div class="actions">
+              <button id="loadProfileButton" class="secondary" type="button">Load Profile Values</button>
+              <button id="exportProfileButton" class="secondary" type="button">Export Profile JSON</button>
+              <button id="copyProfileButton" class="secondary" type="button">Copy JSON</button>
+              <button id="downloadProfileButton" class="secondary" type="button">Download JSON</button>
+              <button id="saveProfileButton" type="button">Save Lab Profile</button>
+            </div>
+          </details>
+        </section>
+
+        <section class="panel actions-panel">
+          <div class="section-heading">
+            <span class="section-step">C</span>
+            <h2>Proof/Test Send</h2>
+          </div>
+          <label class="checkbox-label">
+            <input id="confirmTestPrint" type="checkbox">
+            I understand this sends rendered ZPL directly to the selected printer and bypasses the production queue.
+          </label>
+          <div id="sendResult" class="muted-line"></div>
+          <div class="actions">
+            <button id="sendButton" type="button">Send Proof Print</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="template-lab-right">
+        <section class="panel">
+          <div class="section-heading">
+            <span class="section-step">D</span>
+            <h2>Preview</h2>
+          </div>
+          <div id="metadataBadges" class="template-badge-row"></div>
+          <div id="renderStateLine" class="render-state render-state-stale">Not rendered yet</div>
+          <div id="lastRenderedAt" class="muted-line">Last rendered at -</div>
+          <div id="previewFrame" class="zpl-preview-frame">
+            <div id="previewPlaceholder" class="preview-placeholder">Render to see the label preview.</div>
+            <img id="previewImage" class="zpl-preview-image hidden" alt="Rendered ZPL preview">
+          </div>
+          <div id="previewStatus" class="muted-line"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <span class="section-step">E</span>
+            <h2>Render Metadata</h2>
+          </div>
+          <div id="metadataGrid" class="health-summary-grid"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <span class="section-step">F</span>
+            <h2>Field-Fit Debug</h2>
+          </div>
+          <div id="fitDebug" class="fit-debug"></div>
+        </section>
+
+        <details class="panel zpl-code-panel">
+          <summary>
+            <span>Rendered ZPL</span>
+            <span id="codeSizeBadge" class="template-badge">not rendered</span>
+          </summary>
+          <pre id="renderedZpl">Render a template to see the generated ZPL.</pre>
+        </details>
+      </div>
+    </div>
+  </main>
+
+  <script src="/offline/template-lab.js"></script>
+</body>
+</html>

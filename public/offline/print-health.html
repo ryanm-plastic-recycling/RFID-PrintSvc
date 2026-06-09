@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PRI Print Health</title>
+  <link rel="stylesheet" href="/offline/offline.css">
+</head>
+<body>
+  <main class="page-shell print-health-shell">
+    <header class="app-header">
+      <div class="logo-slot logo-slot-left">
+        <img class="brand-logo pri-logo" src="/offline/assets/pri-logo.png" alt="PRI logo">
+      </div>
+
+      <div class="header-title-block">
+        <p class="brand-kicker">PRI Print Health</p>
+        <h1>Direct-ZPL Queue Health</h1>
+        <span id="headerStatus" class="status-pill status-pill-disabled">Status: Checking</span>
+      </div>
+
+      <div class="logo-slot logo-slot-right">
+        <img class="brand-logo innovation-logo" src="/offline/assets/innovation-logo.png" alt="Innovation Team logo">
+      </div>
+    </header>
+
+    <nav class="page-nav" aria-label="Print health navigation">
+      <a class="nav-button" href="/offline">Operator Print Page</a>
+      <a class="nav-button" href="/offline/admin">Admin Controls</a>
+      <a class="nav-button" href="/offline/template-lab">Template Lab</a>
+    </nav>
+
+    <section id="statusBanner" class="status-banner status-disabled">
+      <div id="statusTitle" class="status-title">Checking PrintSvc</div>
+      <div id="statusMeta" class="status-message">Loading health, queue, and recent log data...</div>
+      <div class="status-warning">This page is read-only. It does not send labels or change queue behavior.</div>
+    </section>
+
+    <section class="panel">
+      <div class="health-toolbar">
+        <div>
+          <h2>Current Runtime</h2>
+          <p id="lastRefresh" class="muted-line">Not refreshed yet</p>
+        </div>
+        <div class="health-actions">
+          <label class="checkbox-label auto-refresh-label">
+            <input id="autoRefresh" type="checkbox">
+            Auto-refresh
+          </label>
+          <select id="refreshInterval" aria-label="Auto-refresh interval">
+            <option value="10000">10 sec</option>
+            <option value="30000" selected>30 sec</option>
+            <option value="60000">60 sec</option>
+          </select>
+          <button id="refreshButton" type="button">Refresh</button>
+        </div>
+      </div>
+
+      <div id="summaryGrid" class="health-summary-grid"></div>
+      <div class="scope-block">
+        <h3>Enabled Scopes</h3>
+        <div id="enabledScopes" class="scope-list"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <span class="section-step">Q</span>
+        <h2>Printer Queues</h2>
+      </div>
+      <div id="pausedPrinters" class="warning-list"></div>
+      <div id="printerCards" class="printer-card-grid"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <span class="section-step">B</span>
+        <h2>Batch / Review Items</h2>
+      </div>
+      <div id="batchHealth" class="compact-list"></div>
+      <div id="reviewItems" class="compact-list"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <span class="section-step">L</span>
+        <h2>Searchable Logs</h2>
+      </div>
+
+      <form id="logFilterForm" class="log-filter-grid">
+        <label>
+          Tail
+          <input id="logTail" name="tail" type="number" min="1" max="5000" value="500">
+        </label>
+        <label>
+          Event
+          <input id="logEvent" name="event" autocomplete="off">
+        </label>
+        <label>
+          Level
+          <select id="logLevel" name="level">
+            <option value="">Any</option>
+            <option value="error">Error</option>
+            <option value="warn">Warn</option>
+            <option value="info">Info</option>
+          </select>
+        </label>
+        <label>
+          Station
+          <input id="logStation" name="station" autocomplete="off">
+        </label>
+        <label>
+          Family
+          <input id="logFamily" name="family" autocomplete="off">
+        </label>
+        <label>
+          Lot
+          <input id="logLotNumber" name="lotNumber" autocomplete="off">
+        </label>
+        <label>
+          Printer IP
+          <input id="logPrinterIp" name="printerIp" autocomplete="off">
+        </label>
+        <label>
+          Search
+          <input id="logSearch" name="search" autocomplete="off">
+        </label>
+        <div class="actions compact-actions">
+          <button type="submit">Apply Filters</button>
+        </div>
+      </form>
+
+      <div id="recentErrors" class="warning-list"></div>
+      <div id="logMeta" class="muted-line"></div>
+      <pre id="logOutput">[]</pre>
+    </section>
+  </main>
+
+  <script src="/offline/print-health.js"></script>
+</body>
+</html>

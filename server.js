@@ -52,6 +52,7 @@ const jwt = require("jsonwebtoken");
 const jwksClient = require("jwks-rsa");
 const crypto = require("crypto");
 const fs = require("fs");
+const net = require("net");
 const path = require("path");
 const multer = require("multer");
 const { appendOfflineAuditEvent, readLatestOfflineAuditEvents } = require("./lib/offlineAudit");
@@ -62,18 +63,113 @@ const {
   requireOfflineLocalAccess,
   setAdminCookie
 } = require("./lib/offlineSecurity");
+const {
+  loadZplTemplate,
+  getFittedFieldDefinitions,
+  renderZplTemplateFile,
+  renderZplTemplateWithMetadata,
+  renderZplTemplateFileWithoutRfid,
+  renderZplTemplateWithoutRfidWithMetadata,
+  rfidTextToHex,
+  sendZplOverTcp
+} = require("./lib/zplPrinter");
+const {
+  getStationProfile,
+  getTemplateDefinition,
+  listStationProfiles,
+  listTemplateLabTemplates
+} = require("./lib/zplProfiles");
 
 const CONFIG_DIR = process.env.PRINTSVC_CONFIG_DIR || "C:\\PrintSvc";
 const TEMPLATE_DIR = process.env.BARTENDER_TEMPLATE_DIR || "C:\\RFID";
 const mappingsPath = path.join(CONFIG_DIR, "mappings.json");
 const OFFLINE_PUBLIC_DIR = path.join(__dirname, "public", "offline");
 const OFFLINE_ASSETS_DIR = path.join(OFFLINE_PUBLIC_DIR, "assets");
+const ZPL_TEMPLATE_REPO_DIR = path.join(__dirname, "zpl");
+const ZPL_TEMPLATE_LAB_PROFILE_PATH = process.env.ZPL_TEMPLATE_LAB_PROFILE_PATH || path.join(CONFIG_DIR, "template-lab-profiles.json");
+const PRINTSVC_LOG_PATH = process.env.PRINTSVC_LOG_PATH || path.join(CONFIG_DIR, "logs", "printsvc-out.log");
+const PRINTSVC_LOG_TAIL_DEFAULT = 500;
+const PRINTSVC_LOG_TAIL_MAX = 5000;
+const PRINTSVC_LOG_READ_MAX_BYTES = 16 * 1024 * 1024;
 
 const GRAPH_DRIVE_CACHE_MS = 6 * 60 * 60 * 1000; // 6 hours
 const SMALL_UPLOAD_MAX = 4 * 1024 * 1024; // 4 MB or whatever threshold you want
 
 const DV_INV_NOWEIGHT_COL = process.env.DV_INV_NOWEIGHT_COL || "rm_noweightmode";
 const PRINT_JOB_SPACING_MS = Number(process.env.PRINT_JOB_SPACING_MS || 1500);
+const ZPL_TCP_TIMEOUT_DEFAULT_MS = 120000;
+const ZPL_LABEL_SPACING_DEFAULT_MS = 8000;
+const ZPL_CONNECT_RETRY_COUNT_DEFAULT = 0;
+const ZPL_CONNECT_RETRY_DELAY_DEFAULT_MS = 3000;
+const ZPL_DUPLICATE_GUARD_TTL_MS = 10 * 60 * 1000;
+const ZPL_DUPLICATE_POLICY_DEFAULT = "skip_recent";
+const ZPL_DUPLICATE_POLICIES = Object.freeze(["skip_recent", "allow"]);
+const ZPL_SOCKET_MODE_DEFAULT = "per_label";
+const ZPL_SOCKET_MODES = Object.freeze(["per_label", "persistent", "batch"]);
+const ZPL_MAX_LABELS_PER_CONNECTION_DEFAULT = 50;
+const ZPL_SOCKET_IDLE_CLOSE_DEFAULT_MS = 30000;
+const ZPL_BATCH_MAX_LABELS_DEFAULT = 60;
+const ZPL_BATCH_COLLECT_DEFAULT_MS = 1500;
+const ZPL_BATCH_INTER_BATCH_DELAY_DEFAULT_MS = 0;
+const ZPL_BATCH_MAX_BYTES_DEFAULT = 512 * 1024;
+const ZPL_QUEUE_DIR = process.env.ZPL_QUEUE_DIR || path.join(CONFIG_DIR, "queue");
+const ZPL_STALE_SENDING_THRESHOLD_DEFAULT_MS = 2 * 60 * 1000;
+const DEFAULT_DIRECT_ZPL_ENABLED_SCOPES = "P1:RAW";
+const DEFAULT_DIRECT_ZPL_RAW_TEMPLATE_PATH = "C:\\RFID\\zpl\\RFID-RAW-P1.template.zpl";
+const DEFAULT_DIRECT_ZPL_FG_TEMPLATE_PATHS = Object.freeze({
+  P1: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
+  P2: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
+  P3: "C:\\RFID\\zpl\\RFID-FG-P3.template.zpl",
+  P4: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
+  P5: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
+  P6: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
+  P7: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
+  P8: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl"
+});
+const DEFAULT_DIRECT_ZPL_SAMPLE_TEMPLATE_PATHS = Object.freeze({
+  SAMPLE: Object.freeze({ P3: "C:\\RFID\\zpl\\QCSample-P3.template.zpl" }),
+  RETAIN: Object.freeze({ P3: "C:\\RFID\\zpl\\QCRetain-P3.template.zpl" }),
+  SAMPLE_POUNDS: Object.freeze({ P3: "C:\\RFID\\zpl\\QCSamplePounds-P3.template.zpl" })
+});
+const DIRECT_ZPL_P3_SAMPLE_PRINTER_DEFAULT = Object.freeze({
+  ip: "192.168.50.218",
+  port: 9100,
+  printer: "Zebra ZT230 P3 EXT"
+});
+const DIRECT_ZPL_SAMPLE_PRINTER_DEFAULTS = Object.freeze({
+  SAMPLE: Object.freeze({ P3: DIRECT_ZPL_P3_SAMPLE_PRINTER_DEFAULT }),
+  RETAIN: Object.freeze({ P3: DIRECT_ZPL_P3_SAMPLE_PRINTER_DEFAULT }),
+  SAMPLE_POUNDS: Object.freeze({ P3: DIRECT_ZPL_P3_SAMPLE_PRINTER_DEFAULT })
+});
+const DIRECT_ZPL_QUEUE_STATUSES = Object.freeze([
+  "queued",
+  "sending",
+  "sent_to_printer",
+  "unknown_after_send",
+  "failed_before_send",
+  "rejected"
+]);
+const DUPLICATE_RECENT_ZPL_SKIP_MESSAGE = "Label was already accepted recently and was skipped to prevent duplicate RFID.";
+const DIRECT_ZPL_RAW_PRINTER_DEFAULTS = Object.freeze({
+  P1: Object.freeze({ ip: "192.168.50.239", port: 9100, templateFamily: "RAW" }),
+  P2: Object.freeze({ ip: "192.168.50.241", port: 9100, templateFamily: "RAW" }),
+  P3: Object.freeze({ ip: "192.168.50.223", port: 9100, templateFamily: "RAW" }),
+  P4: Object.freeze({ ip: "192.168.50.242", port: 9100, templateFamily: "RAW" }),
+  P5: Object.freeze({ ip: "192.168.50.244", port: 9100, templateFamily: "RAW" }),
+  P6: Object.freeze({ ip: "192.168.6.240", port: 9100, templateFamily: "RAW" }),
+  P7: Object.freeze({ ip: "192.168.8.200", port: 9100, templateFamily: "RAW" }),
+  P8: Object.freeze({ ip: "192.168.7.122", port: 9100, templateFamily: "RAW" })
+});
+const DIRECT_ZPL_SUPPORTED_PILOT_SCOPES = Object.freeze({
+  P1: Object.freeze(["RAW", "FG"]),
+  P2: Object.freeze(["RAW", "FG"]),
+  P3: Object.freeze(["RAW", "FG", "SAMPLE", "RETAIN", "SAMPLE_POUNDS"]),
+  P4: Object.freeze(["RAW", "FG"]),
+  P5: Object.freeze(["RAW", "FG"]),
+  P6: Object.freeze(["RAW", "FG"]),
+  P7: Object.freeze(["RAW", "FG"]),
+  P8: Object.freeze(["RAW", "FG"])
+});
 
 /**
  * =========================
@@ -141,6 +237,157 @@ const mappings = loadMappingsFile();
 const QC_SAMPLE_POUNDS_TEMPLATE_FILENAME = process.env.QC_SAMPLE_POUNDS_TEMPLATE_FILENAME || process.env.QC_SAMPLE_POUNDS_TEMPLATE || "QCSamplePounds-P3.btw";
 const QC_SAMPLE_POUNDS_DEFAULT_LABELS = ["5000", "15000", "25000", "35000", "Last Box"];
 
+function normalizePrintEngine(value) {
+  const engine = String(value || "bartender").trim().toLowerCase();
+  if (engine === "bartender" || engine === "zpl") return engine;
+
+  const error = new Error("Invalid PRINT_ENGINE. Expected 'bartender' or 'zpl'.");
+  error.code = "INVALID_PRINT_ENGINE";
+  error.statusCode = 500;
+  error.details = { printEngine: value };
+  throw error;
+}
+
+function getConfiguredPrintEngine() {
+  return normalizePrintEngine(process.env.PRINT_ENGINE);
+}
+
+function getPrintEngineHealth() {
+  try {
+    return { ok: true, printEngine: getConfiguredPrintEngine() };
+  } catch (error) {
+    return {
+      ok: false,
+      printEngine: "invalid",
+      message: error.message
+    };
+  }
+}
+
+function getNonNegativeIntegerEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value >= 0 ? value : fallback;
+}
+
+function getPositiveIntegerEnvValue(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function getZplTcpTimeoutMs() {
+  return getPositiveIntegerEnvValue("ZPL_TCP_TIMEOUT_MS", ZPL_TCP_TIMEOUT_DEFAULT_MS);
+}
+
+function getZplLabelSpacingMs() {
+  return getNonNegativeIntegerEnv("ZPL_LABEL_SPACING_MS", ZPL_LABEL_SPACING_DEFAULT_MS);
+}
+
+function getZplConnectRetryCount() {
+  return getNonNegativeIntegerEnv("ZPL_CONNECT_RETRY_COUNT", ZPL_CONNECT_RETRY_COUNT_DEFAULT);
+}
+
+function getZplConnectRetryDelayMs() {
+  return getNonNegativeIntegerEnv("ZPL_CONNECT_RETRY_DELAY_MS", ZPL_CONNECT_RETRY_DELAY_DEFAULT_MS);
+}
+
+function getZplStaleSendingThresholdMs() {
+  return getPositiveIntegerEnvValue("ZPL_STALE_SENDING_THRESHOLD_MS", ZPL_STALE_SENDING_THRESHOLD_DEFAULT_MS);
+}
+
+function normalizeZplDuplicatePolicy(value) {
+  const policy = String(value || ZPL_DUPLICATE_POLICY_DEFAULT).trim().toLowerCase();
+  if (ZPL_DUPLICATE_POLICIES.includes(policy)) return policy;
+
+  const error = new Error("Invalid ZPL_DUPLICATE_POLICY. Expected 'skip_recent' or 'allow'.");
+  error.code = "INVALID_ZPL_DUPLICATE_POLICY";
+  error.statusCode = 500;
+  error.details = { zplDuplicatePolicy: value };
+  throw error;
+}
+
+function getZplDuplicatePolicy() {
+  return normalizeZplDuplicatePolicy(process.env.ZPL_DUPLICATE_POLICY);
+}
+
+function getZplDuplicatePolicyHealth() {
+  try {
+    return { ok: true, zplDuplicatePolicy: getZplDuplicatePolicy() };
+  } catch (error) {
+    return {
+      ok: false,
+      zplDuplicatePolicy: "invalid",
+      message: error.message
+    };
+  }
+}
+
+function normalizeZplSocketMode(value) {
+  const mode = String(value || ZPL_SOCKET_MODE_DEFAULT).trim().toLowerCase();
+  if (ZPL_SOCKET_MODES.includes(mode)) return mode;
+
+  const error = new Error("Invalid ZPL_SOCKET_MODE. Expected 'per_label', 'persistent', or 'batch'.");
+  error.code = "INVALID_ZPL_SOCKET_MODE";
+  error.statusCode = 500;
+  error.details = { zplSocketMode: value };
+  throw error;
+}
+
+function getZplSocketMode() {
+  return normalizeZplSocketMode(process.env.ZPL_SOCKET_MODE);
+}
+
+function getZplSocketModeHealth() {
+  try {
+    return { ok: true, zplSocketMode: getZplSocketMode() };
+  } catch (error) {
+    return {
+      ok: false,
+      zplSocketMode: "invalid",
+      message: error.message
+    };
+  }
+}
+
+function getZplMaxLabelsPerConnection() {
+  return getPositiveIntegerEnvValue("ZPL_MAX_LABELS_PER_CONNECTION", ZPL_MAX_LABELS_PER_CONNECTION_DEFAULT);
+}
+
+function getZplSocketIdleCloseMs() {
+  return getPositiveIntegerEnvValue("ZPL_SOCKET_IDLE_CLOSE_MS", ZPL_SOCKET_IDLE_CLOSE_DEFAULT_MS);
+}
+
+function getZplBatchMaxLabels() {
+  return getPositiveIntegerEnvValue("ZPL_BATCH_MAX_LABELS", ZPL_BATCH_MAX_LABELS_DEFAULT);
+}
+
+function getZplBatchCollectMs() {
+  return getNonNegativeIntegerEnv("ZPL_BATCH_COLLECT_MS", ZPL_BATCH_COLLECT_DEFAULT_MS);
+}
+
+function getZplBatchInterBatchDelayMs() {
+  return getNonNegativeIntegerEnv("ZPL_BATCH_INTER_BATCH_DELAY_MS", ZPL_BATCH_INTER_BATCH_DELAY_DEFAULT_MS);
+}
+
+function getZplBatchMaxBytes() {
+  return getPositiveIntegerEnvValue("ZPL_BATCH_MAX_BYTES", ZPL_BATCH_MAX_BYTES_DEFAULT);
+}
+
+function getZplTransportSettings() {
+  return {
+    tcpTimeoutMs: getZplTcpTimeoutMs(),
+    labelSpacingMs: getZplLabelSpacingMs(),
+    connectRetryCount: getZplConnectRetryCount(),
+    connectRetryDelayMs: getZplConnectRetryDelayMs(),
+    socketMode: getZplSocketMode(),
+    maxLabelsPerConnection: getZplMaxLabelsPerConnection(),
+    socketIdleCloseMs: getZplSocketIdleCloseMs(),
+    batchMaxLabels: getZplBatchMaxLabels(),
+    batchCollectMs: getZplBatchCollectMs(),
+    batchInterBatchDelayMs: getZplBatchInterBatchDelayMs(),
+    batchMaxBytes: getZplBatchMaxBytes()
+  };
+}
+
 function getLotFamily(lotNumber) {
   const prefix = (lotNumber || "").trim().substring(0, 2).toUpperCase();
   return mappings.rules?.lotPrefixToLabelFamily?.[prefix] || "RAW";
@@ -159,6 +406,16 @@ function resolveTemplatePath(templateValue) {
   const fileName = path.basename(raw);
 
   return path.join(TEMPLATE_DIR, fileName);
+}
+
+function resolveZplTemplatePath(templateValue) {
+  const raw = String(templateValue || "").trim();
+  if (!raw) throw new Error("ZPL template mapping is blank.");
+
+  if (path.isAbsolute(raw) || path.win32.isAbsolute(raw)) return raw;
+
+  const zplTemplateDir = process.env.ZPL_TEMPLATE_DIR || path.join(TEMPLATE_DIR, "zpl");
+  return path.join(zplTemplateDir, raw);
 }
 
 function getMappedPrinterForStation(station, usage, labelKind) {
@@ -204,6 +461,211 @@ function resolvePrinterAndTemplate({ station, lotNumber }) {
   return { family: fam, printer, template };
 }
 
+function zplMappingError(message, details = {}) {
+  const error = new Error(message);
+  error.code = "ZPL_MAPPING_NOT_FOUND";
+  error.statusCode = 400;
+  error.details = details;
+  return error;
+}
+
+function unsupportedDirectZplError(message, details = {}) {
+  const error = new Error(message);
+  error.code = "UNSUPPORTED_DIRECT_ZPL";
+  error.statusCode = 400;
+  error.details = {
+    supportedScopes: getDirectZplEnabledScopes(),
+    ...details
+  };
+  return error;
+}
+
+function getDirectZplConfig() {
+  return mappings.directZpl || mappings.zpl || {};
+}
+
+function normalizeDirectZplScopeFamily(value) {
+  const raw = String(value || "RAW").trim().toUpperCase().replace(/[\s\-]/g, "_");
+  const compact = raw.replace(/_/g, "");
+
+  if (raw === "RAW" || raw === "FG") return raw;
+  if (["SAMPLE", "QCSAMPLE", "QC"].includes(compact)) return "SAMPLE";
+  if (["RETAIN", "QCRETAIN", "RETAINSAMPLE"].includes(compact)) return "RETAIN";
+  if (["SAMPLEPOUNDS", "QCSAMPLEPOUNDS", "POUNDS", "BYPOUNDS", "SAMPLEBYPOUNDS"].includes(compact)) return "SAMPLE_POUNDS";
+
+  return raw;
+}
+
+function parseDirectZplEnabledScopes(value = process.env.DIRECT_ZPL_ENABLED_SCOPES || DEFAULT_DIRECT_ZPL_ENABLED_SCOPES) {
+  return String(value || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [stationRaw, familyRaw = "RAW"] = entry.split(":");
+      return {
+        station: String(stationRaw || "").trim().toUpperCase(),
+        family: normalizeDirectZplScopeFamily(familyRaw)
+      };
+    })
+    .filter((scope) => scope.station && scope.family);
+}
+
+function getDirectZplEnabledScopes() {
+  return parseDirectZplEnabledScopes();
+}
+
+function isKnownDirectZplPilotScope({ station, family }) {
+  const st = String(station || "").trim().toUpperCase();
+  const fam = normalizeDirectZplScopeFamily(family);
+  return (DIRECT_ZPL_SUPPORTED_PILOT_SCOPES[st] || []).includes(fam);
+}
+
+function isDirectZplPilotSupported({ station, family }) {
+  const st = String(station || "").trim().toUpperCase();
+  const fam = normalizeDirectZplScopeFamily(family);
+  if (!isKnownDirectZplPilotScope({ station: st, family: fam })) return false;
+  return getDirectZplEnabledScopes().some((scope) => scope.station === st && scope.family === fam);
+}
+
+function getDirectZplPrinterConfig(directZpl, station, family = "") {
+  const st = String(station || "").trim().toUpperCase();
+  const fam = normalizeDirectZplScopeFamily(family);
+  const familyPrinter = fam ? (
+    directZpl.familyPrinters?.[fam]?.[st] ||
+    directZpl.printersByFamily?.[fam]?.[st] ||
+    directZpl.printerOverrides?.[fam]?.[st] ||
+    DIRECT_ZPL_SAMPLE_PRINTER_DEFAULTS[fam]?.[st]
+  ) : null;
+
+  return familyPrinter ||
+    directZpl.printers?.[st] ||
+    directZpl.stations?.[st] ||
+    mappings.zplPrinters?.[st] ||
+    DIRECT_ZPL_RAW_PRINTER_DEFAULTS[st] ||
+    null;
+}
+
+function getDirectZplTemplateValue(directZpl, family, station, printerConfig = {}) {
+  const fam = normalizeDirectZplScopeFamily(family);
+  const st = String(station || "").trim().toUpperCase();
+  const genericPrinterTemplate = printerConfig.templatePath || printerConfig.template || "";
+
+  return directZpl.templates?.[fam]?.[st] ||
+    mappings.zplTemplates?.[fam]?.[st] ||
+    printerConfig.templates?.[fam] ||
+    (fam === "RAW" ? genericPrinterTemplate : "") ||
+    (fam === "RAW" ? directZpl.templates?.RAW?.P1 : "") ||
+    (fam === "RAW" ? DEFAULT_DIRECT_ZPL_RAW_TEMPLATE_PATH : "") ||
+    (fam === "FG" ? DEFAULT_DIRECT_ZPL_FG_TEMPLATE_PATHS[st] : "") ||
+    (DEFAULT_DIRECT_ZPL_SAMPLE_TEMPLATE_PATHS[fam]?.[st] || "");
+}
+
+function getDirectZplPilotMappingsForLog() {
+  const directZpl = getDirectZplConfig();
+  return getDirectZplEnabledScopes().map((scope) => {
+    const printerConfig = getDirectZplPrinterConfig(directZpl, scope.station, scope.family) || {};
+    const templateValue = getDirectZplTemplateValue(directZpl, scope.family, scope.station, printerConfig);
+    return {
+      station: scope.station,
+      family: scope.family,
+      printerName: String(printerConfig.printer || printerConfig.name || printerConfig.displayName || ""),
+      printerIp: String(printerConfig.ip || printerConfig.printerIp || printerConfig.host || ""),
+      port: Number(printerConfig.port || 9100),
+      templatePath: templateValue ? resolveZplTemplatePath(templateValue) : ""
+    };
+  });
+}
+
+function logUnsupportedDirectZpl({ station, family, reason }) {
+  logWarn(
+    "direct_zpl_unsupported_skipped",
+    { station, family, reason, supportedScopes: getDirectZplEnabledScopes() },
+    `[PrintSvc] Direct ZPL skipped for unsupported station/family station=${station} family=${family}: ${reason}`
+  );
+}
+
+function resolveZplPrinterAndTemplate({ station, family }) {
+  const st = String(station || "").trim().toUpperCase();
+  const fam = normalizeDirectZplScopeFamily(family);
+  const directZpl = getDirectZplConfig();
+
+  if (!isDirectZplPilotSupported({ station: st, family: fam })) {
+    const reason = "Emergency direct-ZPL mode is enabled only for configured supported DIRECT_ZPL_ENABLED_SCOPES.";
+    logUnsupportedDirectZpl({ station: st, family: fam, reason });
+    throw unsupportedDirectZplError(reason, { station: st, family: fam });
+  }
+
+  const printerConfig = getDirectZplPrinterConfig(directZpl, st, fam);
+
+  if (!printerConfig) {
+    throw zplMappingError(`No direct-ZPL printer mapping for station='${st}'.`, {
+      station: st,
+      family: fam
+    });
+  }
+
+  const templateValue = getDirectZplTemplateValue(directZpl, fam, st, printerConfig);
+
+  if (!templateValue) {
+    throw zplMappingError(`No direct-ZPL template mapping for family='${fam}' station='${st}'.`, {
+      station: st,
+      family: fam
+    });
+  }
+
+  const printerIp = String(printerConfig.ip || printerConfig.printerIp || printerConfig.host || "").trim();
+  const port = Number(printerConfig.port || 9100);
+
+  if (!printerIp) {
+    throw zplMappingError(`No direct-ZPL printer IP for station='${st}'.`, {
+      station: st,
+      family: fam
+    });
+  }
+
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw zplMappingError(`Invalid direct-ZPL printer port for station='${st}'.`, {
+      station: st,
+      family: fam,
+      port: printerConfig.port
+    });
+  }
+
+  return {
+    station: st,
+    family: fam,
+    printerName: String(printerConfig.printer || printerConfig.name || printerConfig.displayName || ""),
+    printerIp,
+    port,
+    templatePath: resolveZplTemplatePath(templateValue),
+    templateFamily: fam
+  };
+}
+
+function resolveRfidPrintTarget({ station, lotNumber }) {
+  const bartender = resolvePrinterAndTemplate({ station, lotNumber });
+  const printEngine = getConfiguredPrintEngine();
+
+  if (printEngine === "bartender") {
+    return {
+      printEngine,
+      family: bartender.family,
+      printer: bartender.printer,
+      template: bartender.template,
+      zpl: null
+    };
+  }
+
+  return {
+    printEngine,
+    family: bartender.family,
+    printer: bartender.printer,
+    template: bartender.template,
+    zpl: resolveZplPrinterAndTemplate({ station, family: bartender.family })
+  };
+}
+
 function normalizeOfflineFamily(familyRaw) {
   const family = String(familyRaw || "AUTO").trim().toUpperCase();
   if (!family || family === "AUTO") return "AUTO";
@@ -226,6 +688,42 @@ function resolvePrinterAndTemplateForFamily({ station, lotNumber, family }) {
 
   return { requestedFamily, family: fam, printer, template };
 }
+
+function resolveRfidPrintTargetForFamily({ station, lotNumber, family }) {
+  const bartender = resolvePrinterAndTemplateForFamily({ station, lotNumber, family });
+  const printEngine = getConfiguredPrintEngine();
+
+  if (printEngine === "bartender") {
+    return {
+      ...bartender,
+      printEngine,
+      zpl: null
+    };
+  }
+
+  return {
+    ...bartender,
+    printEngine,
+    zpl: resolveZplPrinterAndTemplate({ station: bartender.station || station, family: bartender.family })
+  };
+}
+
+const startupPrintEngineHealth = getPrintEngineHealth();
+logInfo(
+  "print_engine_config",
+  {
+    printEngine: startupPrintEngineHealth.printEngine,
+    printEngineOk: startupPrintEngineHealth.ok,
+    directZplPilotScopes: getDirectZplEnabledScopes(),
+    directZplEnabledScopes: getDirectZplEnabledScopes(),
+    directZplPilotMappings: getDirectZplPilotMappingsForLog(),
+    zplTransportSettings: getZplTransportSettings(),
+    zplDuplicatePolicy: getZplDuplicatePolicyHealth().zplDuplicatePolicy,
+    zplStaleSendingThresholdMs: getZplStaleSendingThresholdMs(),
+    directZplLimitation: "RAW and FG P1-P8 plus P3 sample/retain labels only; stations controlled by DIRECT_ZPL_ENABLED_SCOPES"
+  },
+  `[PrintSvc] Print engine=${startupPrintEngineHealth.printEngine}; direct-ZPL scopes=${getDirectZplEnabledScopes().map((scope) => `${scope.station}:${scope.family}`).join(",")}`
+);
 
 function normalizeSampleLabelKind(labelKindRaw) {
   const raw = String(labelKindRaw || "").trim().toLowerCase().replace(/[\s_\-]/g, "");
@@ -262,6 +760,39 @@ function resolvePrinterAndSampleTemplate({ station, labelKind, byPounds = false 
 
   const template = resolveTemplatePath(templateValue);
   return { labelKind: kind, printer, template };
+}
+
+function getDirectZplFamilyForSample({ labelKind, byPounds = false }) {
+  const kind = normalizeSampleLabelKind(labelKind);
+  if (byPounds) return "SAMPLE_POUNDS";
+  return kind === "QCRetain" ? "RETAIN" : "SAMPLE";
+}
+
+function resolveSamplePrintTarget({ station, labelKind, byPounds = false }) {
+  const st = normalizeSampleStation(station);
+  const bartender = resolvePrinterAndSampleTemplate({ station: st, labelKind, byPounds });
+  const printEngine = getConfiguredPrintEngine();
+  const directZplFamily = getDirectZplFamilyForSample({ labelKind: bartender.labelKind, byPounds });
+
+  if (printEngine === "bartender") {
+    return {
+      ...bartender,
+      station: st,
+      byPounds,
+      printEngine,
+      directZplFamily,
+      zpl: null
+    };
+  }
+
+  return {
+    ...bartender,
+    station: st,
+    byPounds,
+    printEngine,
+    directZplFamily,
+    zpl: resolveZplPrinterAndTemplate({ station: st, family: directZplFamily })
+  };
 }
 
 /**
@@ -1428,7 +1959,35 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/health", (req, res) => res.json({ ok: true, build: BUILD_TAG }));
+app.get("/health", (req, res) => {
+  const printEngineHealth = getPrintEngineHealth();
+  const duplicatePolicyHealth = getZplDuplicatePolicyHealth();
+  const socketModeHealth = getZplSocketModeHealth();
+  return res.json({
+    ok: printEngineHealth.ok && socketModeHealth.ok,
+    build: BUILD_TAG,
+    printEngine: printEngineHealth.printEngine,
+    printEngineError: printEngineHealth.ok ? undefined : printEngineHealth.message,
+    zplDuplicatePolicy: duplicatePolicyHealth.zplDuplicatePolicy,
+    zplDuplicatePolicyError: duplicatePolicyHealth.ok ? undefined : duplicatePolicyHealth.message,
+    zplSocketMode: socketModeHealth.zplSocketMode,
+    zplSocketModeError: socketModeHealth.ok ? undefined : socketModeHealth.message,
+    zplMaxLabelsPerConnection: getZplMaxLabelsPerConnection(),
+    zplSocketIdleCloseMs: getZplSocketIdleCloseMs(),
+    zplBatchMaxLabels: getZplBatchMaxLabels(),
+    zplBatchCollectMs: getZplBatchCollectMs(),
+    zplBatchInterBatchDelayMs: getZplBatchInterBatchDelayMs(),
+    zplBatchMaxBytes: getZplBatchMaxBytes(),
+    directZplPilotScopes: getDirectZplEnabledScopes(),
+    directZplEnabledScopes: getDirectZplEnabledScopes(),
+    zplQueueEnabled: true,
+    zplQueuePath: ZPL_QUEUE_DIR,
+    zplLabelSpacingMs: getZplLabelSpacingMs(),
+    zplTcpTimeoutMs: getZplTcpTimeoutMs(),
+    zplStaleSendingThresholdMs: getZplStaleSendingThresholdMs(),
+    zplTransportSettings: getZplTransportSettings()
+  });
+});
 
 app.get("/health/deep", async (req, res) => {
   const baseUrl = getDvUrlForRequest(req);
@@ -1464,6 +2023,11 @@ app.get("/metrics/summary", async (req, res) => {
 const activePrintJobs = new Map(); // key -> startedAtMs for in-flight print requests
 const PRINT_LOCK_TTL_MS = 2 * 60 * 1000; // 2 minutes (tweak if you want)
 const printerQueues = new Map(); // printerName -> promise chain so whole-lot label runs do not interleave
+const recentZplSendAccepted = new Map(); // station|lot|box|rfid -> acceptedAtMs
+const zplPersistentSockets = new Map(); // printerKey -> persistent TCP socket state
+const zplPrinterLastSendStartedAt = new Map(); // printerKey -> epoch ms
+let zplSocketFactoryForTests = null;
+let templateTestSendFunctionForTests = null;
 
 function getSafePrintJobSpacingMs() {
   return Number.isFinite(PRINT_JOB_SPACING_MS) && PRINT_JOB_SPACING_MS >= 0 ? PRINT_JOB_SPACING_MS : 1500;
@@ -1491,6 +2055,3361 @@ function enqueuePrinterWork(printerName, work) {
   });
 
   return run;
+}
+
+function getZplQueueKey(zpl) {
+  return `zpl:${zpl.printerIp}:${zpl.port}`;
+}
+
+function zplTransportError(code, message, details = {}) {
+  const error = new Error(message);
+  error.code = code;
+  error.details = details;
+  return error;
+}
+
+function makeZplSocket() {
+  return zplSocketFactoryForTests ? zplSocketFactoryForTests() : new net.Socket();
+}
+
+function getZplPersistentSocketState(printerKey) {
+  const key = String(printerKey || "").trim();
+  if (!key) return null;
+  if (!zplPersistentSockets.has(key)) {
+    zplPersistentSockets.set(key, {
+      printerKey: key,
+      socket: null,
+      connected: false,
+      connectingPromise: null,
+      labelsSent: 0,
+      openedAt: null,
+      lastUsedAt: null,
+      idleTimer: null,
+      idleCloseAt: null,
+      activeSend: null,
+      lastError: null,
+      closing: false
+    });
+  }
+  return zplPersistentSockets.get(key);
+}
+
+function clearZplPersistentSocketIdleTimer(state) {
+  if (state?.idleTimer) {
+    clearTimeout(state.idleTimer);
+    state.idleTimer = null;
+    state.idleCloseAt = null;
+  }
+}
+
+function closeZplPersistentSocket(printerKey, reason = "close") {
+  const state = zplPersistentSockets.get(printerKey);
+  if (!state) return false;
+
+  clearZplPersistentSocketIdleTimer(state);
+  const socket = state.socket;
+  const hadSocket = Boolean(socket);
+  const labelsSent = Number(state.labelsSent || 0);
+  const openedAt = state.openedAt;
+  const lastUsedAt = state.lastUsedAt;
+
+  state.closing = true;
+  state.connected = false;
+  state.connectingPromise = null;
+  state.socket = null;
+  state.activeSend = null;
+  zplPersistentSockets.delete(printerKey);
+
+  if (socket) {
+    try {
+      if (typeof socket.removeAllListeners === "function") socket.removeAllListeners();
+      if (typeof socket.end === "function" && socket.destroyed !== true) socket.end();
+      if (typeof socket.destroy === "function" && socket.destroyed !== true) socket.destroy();
+    } catch {
+      // Best effort cleanup only.
+    }
+  }
+
+  if (hadSocket) {
+    logInfo(
+      "zpl_socket_close",
+      { printerKey, reason, labelsSent, openedAt, lastUsedAt, socketMode: "persistent" },
+      `[PrintSvc] Direct ZPL persistent socket closed printerKey=${printerKey} reason=${reason} labelsSent=${labelsSent}`
+    );
+  }
+
+  return hadSocket;
+}
+
+function scheduleZplPersistentSocketIdleClose(printerKey) {
+  if (getZplSocketMode() !== "persistent") return;
+  const state = zplPersistentSockets.get(printerKey);
+  if (!state?.socket || state.activeSend) return;
+
+  clearZplPersistentSocketIdleTimer(state);
+  const delayMs = getZplSocketIdleCloseMs();
+  state.idleCloseAt = new Date(Date.now() + delayMs).toISOString();
+  state.idleTimer = setTimeout(() => {
+    closeZplPersistentSocket(printerKey, "idle_timeout");
+  }, delayMs);
+  if (typeof state.idleTimer.unref === "function") state.idleTimer.unref();
+}
+
+function getZplPersistentSocketStatus(printerKey) {
+  const state = zplPersistentSockets.get(printerKey);
+  if (!state) return null;
+  return {
+    printerKey,
+    connected: state.connected === true,
+    connecting: Boolean(state.connectingPromise),
+    labelsSent: Number(state.labelsSent || 0),
+    openedAt: state.openedAt || null,
+    lastUsedAt: state.lastUsedAt || null,
+    idleCloseAt: state.idleCloseAt || null,
+    activeSend: state.activeSend ? { ...state.activeSend } : null,
+    lastError: state.lastError || null
+  };
+}
+
+function getZplPersistentSocketStatusForAll() {
+  return Object.fromEntries(
+    Array.from(zplPersistentSockets.keys()).map((printerKey) => [printerKey, getZplPersistentSocketStatus(printerKey)])
+  );
+}
+
+function openZplPersistentSocket({ printerKey, printerIp, port, timeoutMs }) {
+  const targetHost = String(printerIp || "").trim();
+  const targetPort = Number(port || 9100);
+  const state = getZplPersistentSocketState(printerKey);
+
+  if (!targetHost) {
+    return Promise.reject(zplTransportError("ZPL_PRINTER_IP_MISSING", "ZPL printer IP/host is required."));
+  }
+  if (!Number.isInteger(targetPort) || targetPort <= 0 || targetPort > 65535) {
+    return Promise.reject(zplTransportError("ZPL_PRINTER_PORT_INVALID", "ZPL printer port must be a valid TCP port.", { port }));
+  }
+
+  if (state.socket && state.connected && Number(state.labelsSent || 0) < getZplMaxLabelsPerConnection()) {
+    clearZplPersistentSocketIdleTimer(state);
+    logInfo(
+      "zpl_socket_reuse",
+      { printerKey, printerIp: targetHost, port: targetPort, labelsSent: state.labelsSent, socketMode: "persistent" },
+      `[PrintSvc] Direct ZPL persistent socket reused printerKey=${printerKey} labelsSent=${state.labelsSent}`
+    );
+    return Promise.resolve(state);
+  }
+
+  if (state.connectingPromise) return state.connectingPromise;
+  if (state.socket) closeZplPersistentSocket(printerKey, "max_labels_or_reopen");
+
+  const next = getZplPersistentSocketState(printerKey);
+  const startedAt = Date.now();
+  const socket = makeZplSocket();
+  next.socket = socket;
+  next.connected = false;
+  next.labelsSent = 0;
+  next.openedAt = null;
+  next.lastError = null;
+  next.closing = false;
+  clearZplPersistentSocketIdleTimer(next);
+
+  next.connectingPromise = new Promise((resolve, reject) => {
+    let settled = false;
+    let timeout = null;
+
+    function cleanup() {
+      if (timeout) clearTimeout(timeout);
+      timeout = null;
+      socket.removeListener?.("connect", onConnect);
+      socket.removeListener?.("error", onError);
+      socket.removeListener?.("close", onClose);
+      next.connectingPromise = null;
+    }
+
+    function fail(error) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      error.details = {
+        ...(error.details || {}),
+        printerIp: targetHost,
+        port: targetPort,
+        durationMs: Date.now() - startedAt,
+        connected: false,
+        writeStarted: false,
+        writeCompleted: false,
+        socketClosed: true,
+        bytesAttempted: 0,
+        bytesSent: 0
+      };
+      next.lastError = { code: error.code || null, message: error.message, details: error.details };
+      logError(
+        "zpl_socket_error",
+        { printerKey, printerIp: targetHost, port: targetPort, socketMode: "persistent", code: error.code || null, message: error.message, durationMs: error.details.durationMs },
+        `[PrintSvc] Direct ZPL persistent socket open failed printerKey=${printerKey}: ${error.message}`
+      );
+      closeZplPersistentSocket(printerKey, "open_error");
+      reject(error);
+    }
+
+    function onConnect() {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      next.connected = true;
+      next.openedAt = isoNow();
+      next.lastUsedAt = null;
+      logInfo(
+        "zpl_socket_open",
+        { printerKey, printerIp: targetHost, port: targetPort, socketMode: "persistent", durationMs: Date.now() - startedAt },
+        `[PrintSvc] Direct ZPL persistent socket opened printerKey=${printerKey} printer=${targetHost}:${targetPort}`
+      );
+
+      socket.on?.("error", (error) => {
+        if (next.activeSend) return;
+        next.lastError = { code: error.code || null, message: error.message };
+        logError(
+          "zpl_socket_error",
+          { printerKey, printerIp: targetHost, port: targetPort, socketMode: "persistent", code: error.code || null, message: error.message },
+          `[PrintSvc] Direct ZPL persistent socket error printerKey=${printerKey}: ${error.message}`
+        );
+        closeZplPersistentSocket(printerKey, "socket_error");
+      });
+
+      socket.on?.("close", () => {
+        if (next.activeSend || next.closing) return;
+        logInfo("zpl_socket_close", { printerKey, printerIp: targetHost, port: targetPort, socketMode: "persistent", reason: "remote_close", labelsSent: next.labelsSent });
+        zplPersistentSockets.delete(printerKey);
+      });
+
+      resolve(next);
+    }
+
+    function onError(error) {
+      fail(error);
+    }
+
+    function onClose() {
+      if (!settled) {
+        fail(zplTransportError("ZPL_SOCKET_CLOSED", `Persistent ZPL socket closed before connecting to ${targetHost}:${targetPort}.`));
+      }
+    }
+
+    timeout = setTimeout(() => {
+      fail(zplTransportError("ZPL_TCP_TIMEOUT", `Timed out opening persistent ZPL socket to ${targetHost}:${targetPort}.`, {
+        timeoutMs: Number(timeoutMs) || getZplTcpTimeoutMs()
+      }));
+    }, Number(timeoutMs) || getZplTcpTimeoutMs());
+    if (typeof timeout.unref === "function") timeout.unref();
+
+    socket.once?.("connect", onConnect);
+    socket.once?.("error", onError);
+    socket.once?.("close", onClose);
+    socket.connect(targetPort, targetHost);
+  });
+
+  return next.connectingPromise;
+}
+
+function sendZplOverPersistentSocket({ printerKey, printerIp, port = 9100, zpl, timeoutMs = getZplTcpTimeoutMs(), queueDepth = null }) {
+  const payload = String(zpl ?? "");
+  const bytesSent = Buffer.byteLength(payload, "utf8");
+  const targetHost = String(printerIp || "").trim();
+  const targetPort = Number(port || 9100);
+
+  if (!payload) {
+    return Promise.reject(zplTransportError("ZPL_PAYLOAD_EMPTY", "Rendered ZPL payload is empty."));
+  }
+
+  return openZplPersistentSocket({ printerKey, printerIp: targetHost, port: targetPort, timeoutMs })
+    .then((state) => new Promise((resolve, reject) => {
+      const socket = state.socket;
+      const startedAt = Date.now();
+      let settled = false;
+      let writeStarted = false;
+      let writeCompleted = false;
+      let timeout = null;
+
+      state.activeSend = {
+        startedAt: new Date(startedAt).toISOString(),
+        bytesAttempted: bytesSent,
+        queueDepth
+      };
+
+      function cleanup() {
+        if (timeout) clearTimeout(timeout);
+        timeout = null;
+        socket.removeListener?.("error", onError);
+        socket.removeListener?.("close", onClose);
+        state.activeSend = null;
+      }
+
+      function finish(error) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+
+        if (error) {
+          error.details = {
+            ...(error.details || {}),
+            printerIp: targetHost,
+            port: targetPort,
+            durationMs: Date.now() - startedAt,
+            connected: state.connected === true,
+            writeStarted,
+            writeCompleted,
+            endCompleted: false,
+            socketClosed: false,
+            bytesAttempted: writeStarted ? bytesSent : 0,
+            bytesSent: writeCompleted ? bytesSent : 0
+          };
+          state.lastError = { code: error.code || null, message: error.message, details: error.details };
+          logError(
+            "zpl_socket_error",
+            { printerKey, printerIp: targetHost, port: targetPort, socketMode: "persistent", code: error.code || null, message: error.message, writeStarted, writeCompleted },
+            `[PrintSvc] Direct ZPL persistent socket send error printerKey=${printerKey}: ${error.message}`
+          );
+          closeZplPersistentSocket(printerKey, "send_error");
+          reject(error);
+          return;
+        }
+
+        state.labelsSent = Number(state.labelsSent || 0) + 1;
+        state.lastUsedAt = isoNow();
+        state.lastError = null;
+
+        const result = {
+          durationMs: Date.now() - startedAt,
+          bytesSent,
+          socketClosed: false,
+          connected: true,
+          writeStarted: true,
+          writeCompleted: true,
+          endCompleted: false,
+          socketMode: "persistent",
+          labelsSentOnConnection: state.labelsSent
+        };
+
+        if (state.labelsSent >= getZplMaxLabelsPerConnection()) {
+          closeZplPersistentSocket(printerKey, "max_labels_per_connection");
+        } else if (!Number.isFinite(Number(queueDepth)) || Number(queueDepth) <= 0) {
+          scheduleZplPersistentSocketIdleClose(printerKey);
+        }
+
+        resolve(result);
+      }
+
+      function onError(error) {
+        finish(error);
+      }
+
+      function onClose() {
+        finish(zplTransportError("ZPL_SOCKET_CLOSED", `Persistent ZPL socket closed while sending to ${targetHost}:${targetPort}.`));
+      }
+
+      timeout = setTimeout(() => {
+        finish(zplTransportError("ZPL_TCP_TIMEOUT", `Timed out sending ZPL over persistent socket to ${targetHost}:${targetPort}.`, {
+          timeoutMs: Number(timeoutMs) || getZplTcpTimeoutMs()
+        }));
+      }, Number(timeoutMs) || getZplTcpTimeoutMs());
+      if (typeof timeout.unref === "function") timeout.unref();
+
+      socket.once?.("error", onError);
+      socket.once?.("close", onClose);
+
+      try {
+        writeStarted = true;
+        socket.write(payload, "utf8", (error) => {
+          if (error) return finish(error);
+          writeCompleted = true;
+          finish(null);
+        });
+      } catch (error) {
+        finish(error);
+      }
+    }));
+}
+
+function logZplSendTiming({ printerKey, station, lotNumber, box, socketMode, queueDepth }) {
+  const now = Date.now();
+  const previous = zplPrinterLastSendStartedAt.get(printerKey);
+  const elapsedMsSincePreviousSendOnPrinter = Number.isFinite(previous) ? now - previous : null;
+  zplPrinterLastSendStartedAt.set(printerKey, now);
+  logInfo(
+    "zpl_send_timing",
+    { printerKey, station, lotNumber, box, elapsedMsSincePreviousSendOnPrinter, socketMode, queueDepth: queueDepth ?? null },
+    `[PrintSvc] Direct ZPL send timing printerKey=${printerKey} station=${station} lot=${lotNumber} box=${box} mode=${socketMode} elapsedMs=${elapsedMsSincePreviousSendOnPrinter ?? "n/a"}`
+  );
+}
+
+function isDebugZplEnabled() {
+  return String(process.env.DEBUG_ZPL || "").trim().toLowerCase() === "true";
+}
+
+function isRetryableZplTcpError(error) {
+  const code = String(error?.code || error?.details?.code || "").toUpperCase();
+  return [
+    "ZPL_TCP_TIMEOUT",
+    "ETIMEDOUT",
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "EHOSTUNREACH",
+    "ENETUNREACH",
+    "EPIPE"
+  ].includes(code);
+}
+
+function zplSendMayHaveReachedPrinter(error) {
+  const details = error?.details || {};
+  return details.connected === true && (
+    details.writeStarted === true ||
+    details.writeCompleted === true ||
+    Number(details.bytesAttempted || 0) > 0 ||
+    Number(details.bytesSent || 0) > 0
+  );
+}
+
+function toZplSendUnknownError(error, { box }) {
+  const unknown = new Error(`Box ${box} may or may not have printed. Verify before resuming.`);
+  unknown.code = "ZPL_SEND_UNKNOWN";
+  unknown.statusCode = 500;
+  unknown.retryable = false;
+  unknown.operatorAction = "Verify whether the label physically printed before retrying.";
+  unknown.cause = error;
+  unknown.details = {
+    ...(error.details || {}),
+    originalCode: error.code || null,
+    originalMessage: error.message
+  };
+  return unknown;
+}
+
+function getZplRetryDelayMs() {
+  return Math.max(getZplConnectRetryDelayMs(), getZplLabelSpacingMs());
+}
+
+function getRequestScopeFromCount(count) {
+  return Number(count) === 1 ? "single-box" : "multi-box";
+}
+
+function decorateZplPartialFailure(error, { results, failedBox }) {
+  const acceptedBoxes = Array.isArray(results) ? results.map((result) => result.box).filter((box) => box != null) : [];
+  if (error.code === "ZPL_SEND_UNKNOWN") {
+    error.partialPrint = {
+      acceptedBoxes,
+      unknownBox: failedBox,
+      failedBox: null,
+      retryable: false,
+      operatorAction: error.operatorAction || "Verify whether the label physically printed before retrying."
+    };
+  } else {
+    error.partialPrint = {
+      acceptedBoxes,
+      printedBoxes: acceptedBoxes,
+      failedBox,
+      retryable: error.retryable === false ? false : isRetryableZplTcpError(error)
+    };
+  }
+  return error;
+}
+
+function buildErrorResponsePayload(error, fallbackError = "PRINT_FAILED") {
+  return {
+    ok: false,
+    error: error.code || fallbackError,
+    message: error.message,
+    details: error.details || undefined,
+    acceptedBoxes: error.partialPrint?.acceptedBoxes,
+    printedBoxes: error.partialPrint?.printedBoxes,
+    unknownBox: error.partialPrint?.unknownBox,
+    failedBox: error.partialPrint?.failedBox,
+    retryable: error.partialPrint?.retryable,
+    operatorAction: error.partialPrint?.operatorAction || error.operatorAction,
+    bartender: error.response?.data || null
+  };
+}
+
+function getZplDuplicateGuardKey({ station, lotNumber, box, rfid }) {
+  return [
+    String(station || "").trim().toUpperCase(),
+    String(lotNumber || "").trim().toUpperCase(),
+    String(box || "").trim(),
+    String(rfid || "").trim().toUpperCase()
+  ].join("|");
+}
+
+function pruneRecentZplSendAccepted(now = Date.now()) {
+  for (const [key, record] of recentZplSendAccepted.entries()) {
+    if (!record?.acceptedAtMs || now - record.acceptedAtMs > ZPL_DUPLICATE_GUARD_TTL_MS) {
+      recentZplSendAccepted.delete(key);
+    }
+  }
+}
+
+function markRecentZplSendAccepted({ station, lotNumber, box, rfid }, now = Date.now()) {
+  if (String(rfid || "").trim() === "") return;
+  pruneRecentZplSendAccepted(now);
+  recentZplSendAccepted.set(getZplDuplicateGuardKey({ station, lotNumber, box, rfid }), {
+    station,
+    lotNumber,
+    box,
+    rfid,
+    acceptedAtMs: now
+  });
+}
+
+function duplicateRecentZplError(record, { station, lotNumber, box, rfid }, now = Date.now()) {
+  const error = new Error(`Direct-ZPL label was already accepted recently for station=${station} lot=${lotNumber} box=${box} rfid=${rfid}.`);
+  error.code = "DUPLICATE_RECENT_ZPL";
+  error.statusCode = 409;
+  error.retryable = false;
+  error.details = {
+    station,
+    lotNumber,
+    box,
+    rfid,
+    acceptedAtUtc: new Date(record.acceptedAtMs).toISOString(),
+    expiresAtUtc: new Date(record.acceptedAtMs + ZPL_DUPLICATE_GUARD_TTL_MS).toISOString(),
+    ageMs: now - record.acceptedAtMs
+  };
+  return error;
+}
+
+function isZplDuplicatePolicyAllow() {
+  return getZplDuplicatePolicy() === "allow";
+}
+
+function logZplDuplicateAllowed(details) {
+  logInfo(
+    "zpl_duplicate_allowed",
+    details,
+    `[PrintSvc] Duplicate recent direct-ZPL label allowed station=${details.station} lot=${details.lotNumber} box=${details.box} rfid=${details.rfid}`
+  );
+}
+
+function assertNoRecentZplDuplicate({ station, lotNumber, box, rfid }, now = Date.now()) {
+  pruneRecentZplSendAccepted(now);
+  const key = getZplDuplicateGuardKey({ station, lotNumber, box, rfid });
+  const record = recentZplSendAccepted.get(key);
+  if (!record) return;
+
+  if (isZplDuplicatePolicyAllow()) {
+    logZplDuplicateAllowed({ station, lotNumber, box, rfid });
+    return;
+  }
+
+  const error = duplicateRecentZplError(record, { station, lotNumber, box, rfid }, now);
+  logWarn(
+    "duplicate_recent_zpl_rejected",
+    error.details,
+    `[PrintSvc] Duplicate recent direct-ZPL label rejected station=${station} lot=${lotNumber} box=${box} rfid=${rfid}`
+  );
+  throw error;
+}
+
+function clearRecentZplDuplicateGuard() {
+  recentZplSendAccepted.clear();
+}
+
+const zplQueueWorkers = new Map(); // printerKey -> { running, paused, activeItem, lastError }
+const zplStaleSendingRecoveryTimers = new Map(); // itemId -> timeout
+let directZplQueueSendFunction = sendDirectZplQueueItem;
+let zplQueueSequence = Date.now();
+
+function ensureZplQueueDir() {
+  fs.mkdirSync(ZPL_QUEUE_DIR, { recursive: true });
+}
+
+function getZplQueueItemPath(itemId) {
+  return path.join(ZPL_QUEUE_DIR, `${itemId}.json`);
+}
+
+function safeJsonRead(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    logWarn("zpl_queue_item_read_failed", { filePath, message: error.message }, `[PrintSvc] Failed to read ZPL queue item ${filePath}: ${error.message}`);
+    return null;
+  }
+}
+
+function writeZplQueueItem(item) {
+  ensureZplQueueDir();
+  const next = {
+    ...item,
+    updatedAt: isoNow()
+  };
+  const target = getZplQueueItemPath(next.itemId);
+  const temp = `${target}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(next, null, 2), "utf8");
+  fs.renameSync(temp, target);
+  return next;
+}
+
+function nextZplQueueSequence() {
+  zplQueueSequence += 1;
+  return zplQueueSequence;
+}
+
+function listZplQueueItems() {
+  ensureZplQueueDir();
+  return fs.readdirSync(ZPL_QUEUE_DIR)
+    .filter((name) => name.toLowerCase().endsWith(".json"))
+    .map((name) => safeJsonRead(path.join(ZPL_QUEUE_DIR, name)))
+    .filter(Boolean)
+    .sort((a, b) => {
+      const byCreated = String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+      if (byCreated !== 0) return byCreated;
+      const aSequence = Number(a.queueSequence);
+      const bSequence = Number(b.queueSequence);
+      if (Number.isFinite(aSequence) && Number.isFinite(bSequence) && aSequence !== bSequence) {
+        return aSequence - bSequence;
+      }
+      return String(a.itemId || "").localeCompare(String(b.itemId || ""));
+    });
+}
+
+function getOrCreateZplWorkerState(printerKey) {
+  const key = String(printerKey || "").trim();
+  if (!zplQueueWorkers.has(key)) {
+    zplQueueWorkers.set(key, {
+      running: false,
+      paused: false,
+      phase: "idle",
+      waitingUntil: null,
+      activeItem: null,
+      activeBatch: null,
+      lastBatchDurationMs: null,
+      lastError: null
+    });
+  }
+  return zplQueueWorkers.get(key);
+}
+
+function isCurrentZplWorkerState(printerKey, state) {
+  return zplQueueWorkers.get(printerKey) === state;
+}
+
+function makeZplJobId() {
+  return `zpljob-${Date.now()}-${crypto.randomUUID()}`;
+}
+
+function makeZplItemId() {
+  return `zplitem-${Date.now()}-${crypto.randomUUID()}`;
+}
+
+function buildZplQueueItem({
+  jobId,
+  station,
+  family,
+  lotNumber,
+  box,
+  rfid,
+  zpl,
+  namedDataSources,
+  printLog = {},
+  requiresRfidEncoding = true,
+  labelKind = "",
+  sampleByPounds = false
+}) {
+  const now = isoNow();
+  return {
+    jobId,
+    itemId: makeZplItemId(),
+    station,
+    family,
+    lotNumber,
+    box,
+    rfid: String(rfid ?? ""),
+    requiresRfidEncoding: requiresRfidEncoding !== false,
+    labelKind,
+    sampleByPounds: sampleByPounds === true,
+    printerIp: zpl.printerIp,
+    printerPort: zpl.port,
+    printerKey: getZplQueueKey(zpl),
+    templatePath: zpl.templatePath,
+    status: "queued",
+    createdAt: now,
+    updatedAt: now,
+    attempts: 0,
+    lastError: null,
+    namedDataSources,
+    printLog
+  };
+}
+
+function isRecentAcceptedQueueItem(item, now = Date.now()) {
+  if (!["sent_to_printer", "unknown_after_send"].includes(item?.status)) return false;
+  const when = Date.parse(item.sentAt || item.unknownAt || item.updatedAt || item.createdAt || "");
+  return Number.isFinite(when) && now - when <= ZPL_DUPLICATE_GUARD_TTL_MS;
+}
+
+function findRecentAcceptedZplItem({ station, lotNumber, box, rfid }, { excludeItemId = null, now = Date.now() } = {}) {
+  const key = getZplDuplicateGuardKey({ station, lotNumber, box, rfid });
+  const memoryRecord = recentZplSendAccepted.get(key);
+  if (memoryRecord && now - memoryRecord.acceptedAtMs <= ZPL_DUPLICATE_GUARD_TTL_MS) {
+    return {
+      station: memoryRecord.station,
+      lotNumber: memoryRecord.lotNumber,
+      box: memoryRecord.box,
+      rfid: memoryRecord.rfid,
+      acceptedAtMs: memoryRecord.acceptedAtMs,
+      source: "memory"
+    };
+  }
+
+  return listZplQueueItems().find((item) => {
+    if (excludeItemId && item.itemId === excludeItemId) return false;
+    if (!isRecentAcceptedQueueItem(item, now)) return false;
+    return getZplDuplicateGuardKey(item) === key;
+  }) || null;
+}
+
+function queueItemUsesDuplicateGuard(item = {}) {
+  return item.requiresRfidEncoding !== false && String(item.rfid || "").trim() !== "";
+}
+
+function assertNoRecentZplDuplicatePersistent({ station, lotNumber, box, rfid }, options = {}) {
+  if (options.requiresRfidEncoding === false || String(rfid || "").trim() === "") return;
+
+  const now = options.now || Date.now();
+  pruneRecentZplSendAccepted(now);
+  const record = findRecentAcceptedZplItem({ station, lotNumber, box, rfid }, { excludeItemId: options.excludeItemId, now });
+  if (!record) return;
+
+  if (isZplDuplicatePolicyAllow()) {
+    logZplDuplicateAllowed({ station, lotNumber, box, rfid });
+    return;
+  }
+
+  const acceptedAtMs = record.acceptedAtMs || Date.parse(record.sentAt || record.unknownAt || record.updatedAt || record.createdAt || "");
+  const error = duplicateRecentZplError({ acceptedAtMs }, { station, lotNumber, box, rfid }, now);
+  error.details.itemId = record.itemId || null;
+  error.details.jobId = record.jobId || null;
+  error.details.status = record.status || null;
+  logWarn(
+    "duplicate_recent_zpl_rejected",
+    error.details,
+    `[PrintSvc] Duplicate recent direct-ZPL label rejected station=${station} lot=${lotNumber} box=${box} rfid=${rfid}`
+  );
+  throw error;
+}
+
+function getRecentZplDuplicateSkipDetails({ station, lotNumber, box, rfid }, options = {}) {
+  if (options.requiresRfidEncoding === false || String(rfid || "").trim() === "") return null;
+  if (isZplDuplicatePolicyAllow()) return null;
+
+  const now = options.now || Date.now();
+  pruneRecentZplSendAccepted(now);
+  const record = findRecentAcceptedZplItem({ station, lotNumber, box, rfid }, { excludeItemId: options.excludeItemId, now });
+  if (!record) return null;
+
+  const acceptedAtMs = record.acceptedAtMs || Date.parse(record.sentAt || record.unknownAt || record.updatedAt || record.createdAt || "");
+  if (!Number.isFinite(acceptedAtMs)) return null;
+
+  return {
+    station,
+    lotNumber,
+    box,
+    rfid,
+    acceptedAtUtc: new Date(acceptedAtMs).toISOString(),
+    expiresAtUtc: new Date(acceptedAtMs + ZPL_DUPLICATE_GUARD_TTL_MS).toISOString(),
+    ageMs: now - acceptedAtMs,
+    itemId: record.itemId || null,
+    jobId: record.jobId || null,
+    status: record.status || null,
+    source: record.source || "queue"
+  };
+}
+
+function logDuplicateRecentZplSkipped(details) {
+  logWarn(
+    "duplicate_recent_zpl_skipped",
+    details,
+    `[PrintSvc] Duplicate recent direct-ZPL label skipped station=${details.station} lot=${details.lotNumber} box=${details.box} rfid=${details.rfid}`
+  );
+}
+
+function enqueueNormalDirectZplQueueItems(items) {
+  const itemsToQueue = [];
+  const skippedDuplicates = [];
+
+  for (const item of items) {
+    const duplicate = getRecentZplDuplicateSkipDetails(item, { requiresRfidEncoding: item.requiresRfidEncoding });
+    if (duplicate) {
+      logDuplicateRecentZplSkipped(duplicate);
+      skippedDuplicates.push(duplicate);
+    } else {
+      itemsToQueue.push(item);
+    }
+  }
+
+  let queuedItems = [];
+  try {
+    queuedItems = itemsToQueue.length ? enqueueDirectZplQueueItems(itemsToQueue, { persistRejectedDuplicates: false }) : [];
+  } catch (error) {
+    if (error.code === "DUPLICATE_RECENT_ZPL") {
+      const details = {
+        station: error.details?.station,
+        lotNumber: error.details?.lotNumber,
+        box: error.details?.box,
+        rfid: error.details?.rfid,
+        acceptedAtUtc: error.details?.acceptedAtUtc,
+        expiresAtUtc: error.details?.expiresAtUtc,
+        ageMs: error.details?.ageMs,
+        itemId: error.details?.itemId || null,
+        jobId: error.details?.jobId || null,
+        status: error.details?.status || null,
+        source: "enqueue"
+      };
+      logDuplicateRecentZplSkipped(details);
+      return { queuedItems: [], skippedDuplicates: [details] };
+    }
+    throw error;
+  }
+
+  return { queuedItems, skippedDuplicates };
+}
+
+function buildDirectZplQueueResponse({
+  jobId,
+  station,
+  requestedFamily,
+  family,
+  lotNumber,
+  requestedBoxes = [],
+  queuedItems = [],
+  skippedDuplicates = [],
+  firstBox,
+  lastBox,
+  requestedCount,
+  missingBoxes,
+  printerIp,
+  printerPort,
+  templatePath,
+  extra = {}
+}) {
+  const allSkipped = queuedItems.length === 0 && skippedDuplicates.length > 0;
+  const firstSkipped = skippedDuplicates[0] || null;
+
+  if (allSkipped) {
+    return {
+      ok: true,
+      queued: false,
+      skippedDuplicate: true,
+      dryRun: false,
+      jobId,
+      station,
+      requestedFamily,
+      family,
+      lotNumber,
+      requestedBoxes,
+      box: firstSkipped.box,
+      rfid: firstSkipped.rfid,
+      acceptedAtUtc: firstSkipped.acceptedAtUtc,
+      expiresAtUtc: firstSkipped.expiresAtUtc,
+      skippedDuplicates,
+      skippedDuplicateCount: skippedDuplicates.length,
+      firstBox,
+      lastBox,
+      requestedCount: requestedCount ?? requestedBoxes.length,
+      queuedCount: 0,
+      missingBoxes,
+      printerIp,
+      printerPort,
+      templatePath,
+      message: DUPLICATE_RECENT_ZPL_SKIP_MESSAGE,
+      ...extra
+    };
+  }
+
+  return {
+    ok: true,
+    queued: true,
+    skippedDuplicate: skippedDuplicates.length > 0,
+    dryRun: false,
+    jobId,
+    itemId: queuedItems.length === 1 ? queuedItems[0].itemId : undefined,
+    itemIds: queuedItems.map((item) => item.itemId),
+    station,
+    requestedFamily,
+    family,
+    lotNumber,
+    requestedBoxes,
+    queuedBoxes: queuedItems.map((item) => item.box),
+    skippedDuplicates,
+    skippedDuplicateCount: skippedDuplicates.length,
+    firstBox,
+    lastBox,
+    requestedCount: requestedCount ?? requestedBoxes.length,
+    queuedCount: queuedItems.length,
+    missingBoxes,
+    printerIp,
+    printerPort,
+    templatePath,
+    message: skippedDuplicates.length > 0
+      ? "Direct-ZPL labels queued; recent duplicates were skipped to prevent duplicate RFID."
+      : "Direct-ZPL label queued for printer.",
+    ...extra
+  };
+}
+
+function persistRejectedZplQueueItem(baseItem, error) {
+  const item = {
+    ...baseItem,
+    status: "rejected",
+    attempts: 0,
+    lastError: {
+      code: error.code || "REJECTED",
+      message: error.message,
+      details: error.details || null
+    },
+    rejectedAt: isoNow()
+  };
+  return writeZplQueueItem(item);
+}
+
+function enqueueDirectZplQueueItems(items, options = {}) {
+  const queuedItems = items.map((item) => ({
+    ...item,
+    queuedAt: isoNow(),
+    queueSequence: nextZplQueueSequence()
+  }));
+  const written = [];
+  const printerKeys = new Set();
+
+  for (const queuedItem of queuedItems) {
+    try {
+      assertNoRecentZplDuplicatePersistent(queuedItem, { requiresRfidEncoding: queuedItem.requiresRfidEncoding });
+    } catch (error) {
+      if (error.code === "DUPLICATE_RECENT_ZPL" && options.persistRejectedDuplicates !== false) {
+        const rejected = persistRejectedZplQueueItem(queuedItem, error);
+        error.details = { ...(error.details || {}), itemId: rejected.itemId, jobId: rejected.jobId };
+      }
+      throw error;
+    }
+  }
+
+  for (const queuedItem of queuedItems) {
+    const saved = writeZplQueueItem(queuedItem);
+    written.push(saved);
+    printerKeys.add(saved.printerKey);
+    logInfo(
+      "zpl_queue_item_enqueued",
+      { station: saved.station, lotNumber: saved.lotNumber, box: saved.box, rfid: saved.rfid, printerIp: saved.printerIp, printerPort: saved.printerPort, itemId: saved.itemId, jobId: saved.jobId },
+      `[PrintSvc] Direct ZPL queue item enqueued itemId=${saved.itemId} station=${saved.station} lot=${saved.lotNumber} box=${saved.box} printer=${saved.printerIp}:${saved.printerPort}`
+    );
+  }
+
+  for (const printerKey of printerKeys) {
+    setImmediate(() => startZplQueueWorkerForPrinter(printerKey));
+  }
+
+  return written;
+}
+
+async function writeQueueItemPrintLog(item, result, notes) {
+  const printLog = item.printLog || {};
+  if (!printLog.baseUrl || !printLog.lotId) return;
+  const resultKey = String(result || "").toLowerCase();
+  const resultText = printLog.resultMap?.[result] || printLog[`${resultKey}Result`] || result;
+  const notesText = printLog.notesMap?.[result] || printLog[`${resultKey}Notes`] || notes;
+
+  await writePrintLog(printLog.baseUrl, {
+    lotId: printLog.lotId,
+    inventoryId: printLog.inventoryId || null,
+    rfid: item.rfid,
+    station: item.station,
+    printedBy: printLog.printedBy || "",
+    result: resultText,
+    notes: notesText
+  });
+}
+
+function serializeQueueError(error) {
+  return {
+    code: error.code || "ZPL_QUEUE_ERROR",
+    message: error.message,
+    details: error.details || null,
+    retryable: error.retryable === true
+  };
+}
+
+function parseUtcMs(value) {
+  const ms = Date.parse(value || "");
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function getQueueItemStartedAtMs(item) {
+  return parseUtcMs(item.sendingStartedAt) ||
+    parseUtcMs(item.updatedAt) ||
+    parseUtcMs(item.createdAt) ||
+    0;
+}
+
+function getQueueItemSendDetails(item = {}) {
+  return item.lastError?.details ||
+    item.sendResult ||
+    item.sendDetails ||
+    {};
+}
+
+function getQueueItemBytesSent(item = {}) {
+  const details = getQueueItemSendDetails(item);
+  const value = details.bytesSent ?? item.bytesSent ?? 0;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function getQueueItemBytesAttempted(item = {}) {
+  const details = getQueueItemSendDetails(item);
+  const value = details.bytesAttempted ?? details.bytesSent ?? item.bytesAttempted ?? item.bytesSent ?? 0;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function queueItemProvesNoBytesWritten(item = {}) {
+  const details = getQueueItemSendDetails(item);
+  return details.writeStarted === false &&
+    details.writeCompleted !== true &&
+    getQueueItemBytesAttempted(item) === 0 &&
+    getQueueItemBytesSent(item) === 0;
+}
+
+function isQueueItemSafeToRetry(item = {}) {
+  return item.status === "failed_before_send" && queueItemProvesNoBytesWritten(item);
+}
+
+function queueStatusCounts() {
+  return DIRECT_ZPL_QUEUE_STATUSES.reduce((counts, status) => {
+    counts[status] = 0;
+    return counts;
+  }, {});
+}
+
+function summarizeZplQueueItem(item = {}) {
+  return {
+    itemId: item.itemId,
+    jobId: item.jobId,
+    status: item.status,
+    station: item.station,
+    family: item.family,
+    lotNumber: item.lotNumber,
+    box: item.box,
+    rfid: item.rfid,
+    printerIp: item.printerIp,
+    printerPort: item.printerPort,
+    printerKey: item.printerKey,
+    templatePath: item.templatePath,
+    attempts: Number(item.attempts || 0),
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    sendingStartedAt: item.sendingStartedAt || null,
+    sentAt: item.sentAt || null,
+    unknownAt: item.unknownAt || null,
+    failedAt: item.failedAt || null,
+    rejectedAt: item.rejectedAt || null,
+    recoveredAt: item.recoveredAt || null,
+    recoveredFromStatus: item.recoveredFromStatus || null,
+    recoveryReason: item.recoveryReason || null,
+    operatorAction: item.operatorAction || null,
+    operatorReviewedAt: item.operatorReviewedAt || null,
+    lastError: item.lastError || null,
+    bytesSent: getQueueItemBytesSent(item),
+    writeStarted: getQueueItemSendDetails(item).writeStarted,
+    safeToRetry: isQueueItemSafeToRetry(item)
+  };
+}
+
+function getNextQueuedZplItem(printerKey) {
+  return listZplQueueItems().find((item) => item.printerKey === printerKey && item.status === "queued") || null;
+}
+
+function getQueuedZplItemDepth(printerKey) {
+  return listZplQueueItems().filter((item) => item.printerKey === printerKey && item.status === "queued").length;
+}
+
+function getQueuedZplItemsForPrinter(printerKey) {
+  return listZplQueueItems().filter((item) => item.printerKey === printerKey && item.status === "queued");
+}
+
+function summarizeZplBatchItems(items = []) {
+  return {
+    itemIds: items.map((item) => item.itemId),
+    jobIds: Array.from(new Set(items.map((item) => item.jobId).filter(Boolean))),
+    stations: Array.from(new Set(items.map((item) => item.station).filter(Boolean))),
+    families: Array.from(new Set(items.map((item) => item.family).filter(Boolean))),
+    lotNumbers: Array.from(new Set(items.map((item) => item.lotNumber).filter(Boolean))),
+    boxes: items.map((item) => item.box),
+    rfids: items.map((item) => item.rfid).filter(Boolean)
+  };
+}
+
+function getBatchPrinterTarget(items = []) {
+  const first = items[0] || {};
+  return {
+    printerIp: first.printerIp,
+    printerPort: first.printerPort || 9100,
+    printerKey: first.printerKey
+  };
+}
+
+function renderZplForQueueItem(item = {}) {
+  const zpl = {
+    printerIp: item.printerIp,
+    port: item.printerPort,
+    templatePath: item.templatePath
+  };
+  const data = buildZplRenderDataFromNamed({
+    lotNumber: item.lotNumber,
+    box: item.box,
+    rfid: item.rfid,
+    namedDataSources: item.namedDataSources || {}
+  });
+
+  try {
+    const renderedZpl = item.requiresRfidEncoding === false
+      ? renderZplTemplateFileWithoutRfid(zpl.templatePath, data)
+      : renderZplTemplateFile(zpl.templatePath, data);
+    return {
+      item,
+      renderedZpl,
+      bytes: Buffer.byteLength(renderedZpl, "utf8")
+    };
+  } catch (error) {
+    if (error.code === "INVALID_RFID") {
+      logError(
+        "print_validation_error",
+        { station: item.station, lotNumber: item.lotNumber, box: item.box, invalidRfid: item.rfid, reason: error.message },
+        `[PrintSvc] Direct ZPL validation failed station=${item.station} lot=${item.lotNumber} box=${item.box} invalid rfid="${item.rfid}": ${error.message}`
+      );
+    } else {
+      logError(
+        "zpl_print_error",
+        { station: item.station, lotNumber: item.lotNumber, box: item.box, rfid: item.rfid, printerIp: zpl.printerIp, port: zpl.port, attemptNumber: 0, durationMs: 0, code: error.code || null, message: error.message },
+        `[PrintSvc] Direct ZPL render failed box=${item.box} rfid=${item.rfid} printer=${zpl.printerIp}:${zpl.port}: ${error.message}`
+      );
+    }
+    throw error;
+  }
+}
+
+function markZplQueueItemSending(item, { batchId = null } = {}) {
+  return writeZplQueueItem({
+    ...item,
+    status: "sending",
+    attempts: Number(item.attempts || 0) + 1,
+    lastError: null,
+    sendingStartedAt: isoNow(),
+    activeBatchId: batchId
+  });
+}
+
+async function markZplBatchItemSent(item, result, notes = "Direct ZPL batch sent_to_printer; physical print not confirmed") {
+  const next = writeZplQueueItem({
+    ...item,
+    status: "sent_to_printer",
+    sentAt: isoNow(),
+    sendResult: result,
+    lastError: null,
+    activeBatchId: null
+  });
+  if (queueItemUsesDuplicateGuard(next)) markRecentZplSendAccepted(next);
+  await writeQueueItemPrintLog(next, "Success", notes);
+  logInfo(
+    "zpl_queue_item_sent_to_printer",
+    { station: next.station, lotNumber: next.lotNumber, box: next.box, rfid: next.rfid, printerIp: next.printerIp, printerPort: next.printerPort, itemId: next.itemId, jobId: next.jobId, batchId: result.batchId || null },
+    `[PrintSvc] Direct ZPL queue item sent_to_printer itemId=${next.itemId} station=${next.station} lot=${next.lotNumber} box=${next.box}`
+  );
+  return next;
+}
+
+async function markZplBatchItemFailed(item, error, { rejected = false } = {}) {
+  const next = writeZplQueueItem({
+    ...item,
+    status: rejected ? "rejected" : "failed_before_send",
+    failedAt: isoNow(),
+    rejectedAt: rejected ? isoNow() : item.rejectedAt || null,
+    lastError: serializeQueueError(error),
+    activeBatchId: null
+  });
+  await writeQueueItemPrintLog(next, rejected ? "Rejected" : "Failed", error.message);
+  logError(
+    rejected ? "duplicate_recent_zpl_rejected" : "zpl_queue_item_failed_before_send",
+    { station: next.station, lotNumber: next.lotNumber, box: next.box, rfid: next.rfid, printerIp: next.printerIp, printerPort: next.printerPort, itemId: next.itemId, jobId: next.jobId, error: next.lastError },
+    `[PrintSvc] Direct ZPL queue item ${next.status} itemId=${next.itemId} station=${next.station} lot=${next.lotNumber} box=${next.box}: ${error.message}`
+  );
+  return next;
+}
+
+async function markZplBatchItemUnknown(item, error) {
+  const next = writeZplQueueItem({
+    ...item,
+    status: "unknown_after_send",
+    unknownAt: isoNow(),
+    lastError: serializeQueueError(error),
+    operatorAction: error.operatorAction || "Verify whether the label physically printed before retrying.",
+    activeBatchId: null
+  });
+  if (queueItemUsesDuplicateGuard(next)) markRecentZplSendAccepted(next);
+  await writeQueueItemPrintLog(next, "Unknown", next.operatorAction);
+  logError(
+    "zpl_queue_item_unknown_after_send",
+    { station: next.station, lotNumber: next.lotNumber, box: next.box, rfid: next.rfid, printerIp: next.printerIp, printerPort: next.printerPort, itemId: next.itemId, jobId: next.jobId, operatorAction: next.operatorAction, error: next.lastError },
+    `[PrintSvc] Direct ZPL queue item unknown_after_send itemId=${next.itemId} station=${next.station} lot=${next.lotNumber} box=${next.box}`
+  );
+  return next;
+}
+
+function toZplBatchSendUnknownError(error, { boxes = [] } = {}) {
+  const unknown = new Error(`Batch boxes ${boxes.join(",")} may or may not have printed. Verify before resuming.`);
+  unknown.code = "ZPL_SEND_UNKNOWN";
+  unknown.statusCode = 500;
+  unknown.retryable = false;
+  unknown.operatorAction = "Verify whether the label physically printed before retrying.";
+  unknown.cause = error;
+  unknown.details = {
+    ...(error.details || {}),
+    boxes,
+    originalCode: error.code || null,
+    originalMessage: error.message
+  };
+  return unknown;
+}
+
+async function processNextZplBatchForPrinter(printerKey, state) {
+  const collectMs = getZplBatchCollectMs();
+  if (collectMs > 0) {
+    state.phase = "collecting_batch";
+    state.waitingUntil = new Date(Date.now() + collectMs).toISOString();
+    await sleep(collectMs);
+    state.waitingUntil = null;
+    if (!isCurrentZplWorkerState(printerKey, state) || state.paused) return { didWork: false, didSend: false };
+  }
+
+  const candidates = getQueuedZplItemsForPrinter(printerKey).slice(0, getZplBatchMaxLabels());
+  if (candidates.length === 0) return { didWork: false, didSend: false };
+
+  const batchId = `zplbatch-${Date.now()}-${crypto.randomUUID()}`;
+  const startedAt = Date.now();
+  const maxBytes = getZplBatchMaxBytes();
+  const included = [];
+  let batchBytes = 0;
+
+  logInfo(
+    "zpl_batch_start",
+    { printerKey, batchId, candidateCount: candidates.length, maxLabels: getZplBatchMaxLabels(), maxBytes, collectMs },
+    `[PrintSvc] Direct ZPL batch start printerKey=${printerKey} candidates=${candidates.length}`
+  );
+
+  state.phase = "rendering_batch";
+  state.activeBatch = {
+    batchId,
+    printerKey,
+    batchStartedAt: new Date(startedAt).toISOString(),
+    batchLabelCount: 0,
+    batchBoxes: [],
+    batchBytes: 0,
+    itemIds: []
+  };
+
+  for (const candidate of candidates) {
+    try {
+      assertNoRecentZplDuplicatePersistent(candidate, {
+        excludeItemId: candidate.itemId,
+        requiresRfidEncoding: candidate.requiresRfidEncoding
+      });
+      const rendered = renderZplForQueueItem(candidate);
+      if (included.length > 0 && batchBytes + rendered.bytes > maxBytes) break;
+
+      const sending = markZplQueueItemSending(candidate, { batchId });
+      const entry = { item: sending, renderedZpl: rendered.renderedZpl, bytes: rendered.bytes };
+      included.push(entry);
+      batchBytes += rendered.bytes;
+
+      state.activeBatch = {
+        ...state.activeBatch,
+        batchLabelCount: included.length,
+        batchBoxes: included.map((item) => item.item.box),
+        batchBytes,
+        itemIds: included.map((item) => item.item.itemId)
+      };
+
+      logInfo(
+        "zpl_batch_item_included",
+        { printerKey, batchId, station: sending.station, family: sending.family, lotNumber: sending.lotNumber, box: sending.box, rfid: sending.rfid, itemId: sending.itemId, jobId: sending.jobId, itemBytes: rendered.bytes, batchBytes },
+        `[PrintSvc] Direct ZPL batch included itemId=${sending.itemId} station=${sending.station} lot=${sending.lotNumber} box=${sending.box}`
+      );
+    } catch (error) {
+      await markZplBatchItemFailed(candidate, error, { rejected: error.code === "DUPLICATE_RECENT_ZPL" });
+      state.lastError = serializeQueueError(error);
+    }
+  }
+
+  if (included.length === 0) {
+    state.activeBatch = null;
+    logWarn(
+      "zpl_batch_complete",
+      { printerKey, batchId, batchLabelCount: 0, durationMs: Date.now() - startedAt, status: "empty" },
+      `[PrintSvc] Direct ZPL batch complete printerKey=${printerKey} batchId=${batchId} empty`
+    );
+    return { didWork: true, didSend: false };
+  }
+
+  const items = included.map((entry) => entry.item);
+  const target = getBatchPrinterTarget(items);
+  const summary = summarizeZplBatchItems(items);
+  const payload = included.map((entry) => entry.renderedZpl).join("");
+
+  state.phase = "sending_batch";
+  state.activeItem = null;
+  state.activeBatch = {
+    ...state.activeBatch,
+    printerIp: target.printerIp,
+    printerPort: target.printerPort
+  };
+
+  logInfo(
+    "zpl_batch_send_attempt",
+    { printerKey, batchId, printerIp: target.printerIp, printerPort: target.printerPort, ...summary, batchLabelCount: included.length, batchBytes },
+    `[PrintSvc] -> Direct ZPL BATCH labels=${included.length} bytes=${batchBytes} printer=${target.printerIp}:${target.printerPort}`
+  );
+
+  try {
+    const sendResult = await sendZplOverTcp({
+      printerIp: target.printerIp,
+      port: target.printerPort,
+      zpl: payload,
+      timeoutMs: getZplTcpTimeoutMs(),
+      socketFactory: zplSocketFactoryForTests || undefined
+    });
+    const durationMs = sendResult.durationMs ?? (Date.now() - startedAt);
+    state.lastBatchDurationMs = durationMs;
+
+    logInfo(
+      "zpl_batch_send_success",
+      { printerKey, batchId, printerIp: target.printerIp, printerPort: target.printerPort, ...summary, batchLabelCount: included.length, batchBytes, durationMs, bytesSent: sendResult.bytesSent, socketClosed: sendResult.socketClosed === true, sendAccepted: true, physicalPrintConfirmed: false },
+      `[PrintSvc] <- Direct ZPL BATCH TCP send accepted labels=${included.length} bytes=${batchBytes} printer=${target.printerIp}:${target.printerPort} durationMs=${durationMs}`
+    );
+
+    for (const entry of included) {
+      await markZplBatchItemSent(entry.item, {
+        ...sendResult,
+        batchId,
+        batchLabelCount: included.length,
+        batchBytes,
+        itemBytes: entry.bytes,
+        socketMode: "batch",
+        sendAccepted: true,
+        physicalPrintConfirmed: false
+      });
+    }
+
+    logInfo(
+      "zpl_batch_complete",
+      { printerKey, batchId, printerIp: target.printerIp, printerPort: target.printerPort, ...summary, batchLabelCount: included.length, batchBytes, durationMs, status: "sent_to_printer" },
+      `[PrintSvc] Direct ZPL batch complete printerKey=${printerKey} batchId=${batchId} labels=${included.length}`
+    );
+
+    return { didWork: true, didSend: true };
+  } catch (error) {
+    const durationMs = error.details?.durationMs ?? (Date.now() - startedAt);
+    const unknown = zplSendMayHaveReachedPrinter(error);
+    const batchError = unknown ? toZplBatchSendUnknownError(error, { boxes: summary.boxes }) : error;
+    batchError.details = {
+      ...(batchError.details || {}),
+      printerKey,
+      batchId,
+      batchLabelCount: included.length,
+      batchBytes,
+      itemIds: summary.itemIds,
+      boxes: summary.boxes
+    };
+
+    logError(
+      "zpl_batch_send_error",
+      { printerKey, batchId, printerIp: target.printerIp, printerPort: target.printerPort, ...summary, batchLabelCount: included.length, batchBytes, durationMs, code: batchError.code || null, message: batchError.message, unknownAfterSend: unknown },
+      `[PrintSvc] Direct ZPL batch send error printerKey=${printerKey} batchId=${batchId}: ${batchError.message}`
+    );
+
+    if (unknown) {
+      for (const entry of included) await markZplBatchItemUnknown(entry.item, batchError);
+      state.paused = true;
+      state.phase = "paused";
+      state.lastError = serializeQueueError(batchError);
+      logWarn(
+        "zpl_queue_worker_paused",
+        { printerKey, batchId, operatorAction: batchError.operatorAction, itemIds: summary.itemIds, boxes: summary.boxes },
+        `[PrintSvc] Direct ZPL worker paused printerKey=${printerKey}; batch operator verification required`
+      );
+    } else {
+      batchError.retryable = isRetryableZplTcpError(error);
+      for (const entry of included) await markZplBatchItemFailed(entry.item, batchError);
+      state.lastError = serializeQueueError(batchError);
+    }
+
+    logWarn(
+      "zpl_batch_complete",
+      { printerKey, batchId, printerIp: target.printerIp, printerPort: target.printerPort, ...summary, batchLabelCount: included.length, batchBytes, durationMs, status: unknown ? "unknown_after_send" : "failed_before_send" },
+      `[PrintSvc] Direct ZPL batch complete printerKey=${printerKey} batchId=${batchId} status=${unknown ? "unknown_after_send" : "failed_before_send"}`
+    );
+
+    return { didWork: true, didSend: false };
+  } finally {
+    if (isCurrentZplWorkerState(printerKey, state) && !state.paused) {
+      state.activeBatch = null;
+    }
+  }
+}
+
+async function processZplQueueForPrinter(printerKey) {
+  const state = getOrCreateZplWorkerState(printerKey);
+  if (state.paused) {
+    state.running = false;
+    state.phase = "paused";
+    return;
+  }
+
+  if (!state.running) state.running = true;
+  state.phase = "running";
+  state.waitingUntil = null;
+  logInfo("zpl_queue_worker_start", { printerKey }, `[PrintSvc] Direct ZPL queue worker start printerKey=${printerKey}`);
+
+  try {
+    while (isCurrentZplWorkerState(printerKey, state) && !state.paused) {
+      if (getZplSocketMode() === "batch") {
+        const outcome = await processNextZplBatchForPrinter(printerKey, state);
+        if (!outcome.didWork) break;
+        if (outcome.didSend) {
+          const delayMs = getZplBatchInterBatchDelayMs();
+          state.phase = delayMs > 0 ? "waiting_between_batches" : "running";
+          state.waitingUntil = delayMs > 0 ? new Date(Date.now() + delayMs).toISOString() : null;
+          await sleep(delayMs);
+          state.waitingUntil = null;
+        }
+        continue;
+      }
+
+      let item = getNextQueuedZplItem(printerKey);
+      if (!item) break;
+
+      state.activeItem = item;
+      state.phase = "sending";
+      state.waitingUntil = null;
+      item.status = "sending";
+      item.attempts = Number(item.attempts || 0) + 1;
+      item.lastError = null;
+      item.sendingStartedAt = isoNow();
+      item = writeZplQueueItem(item);
+
+      logInfo(
+        "zpl_queue_item_sending",
+        { station: item.station, lotNumber: item.lotNumber, box: item.box, rfid: item.rfid, printerIp: item.printerIp, printerPort: item.printerPort, itemId: item.itemId, jobId: item.jobId },
+        `[PrintSvc] Direct ZPL queue item sending itemId=${item.itemId} station=${item.station} lot=${item.lotNumber} box=${item.box}`
+      );
+
+      let didSendToPrinter = false;
+      try {
+        assertNoRecentZplDuplicatePersistent(item, {
+          excludeItemId: item.itemId,
+          requiresRfidEncoding: item.requiresRfidEncoding
+        });
+
+        const result = await directZplQueueSendFunction({
+          zpl: {
+            printerIp: item.printerIp,
+            port: item.printerPort,
+            templatePath: item.templatePath
+          },
+          station: item.station,
+          lotNumber: item.lotNumber,
+          box: item.box,
+          rfid: item.rfid,
+          namedDataSources: item.namedDataSources || {},
+          requiresRfidEncoding: item.requiresRfidEncoding,
+          item,
+          queueDepth: getQueuedZplItemDepth(printerKey)
+        });
+
+        didSendToPrinter = true;
+        item = {
+          ...item,
+          status: "sent_to_printer",
+          sentAt: isoNow(),
+          sendResult: result,
+          lastError: null
+        };
+        item = writeZplQueueItem(item);
+        if (queueItemUsesDuplicateGuard(item)) markRecentZplSendAccepted(item);
+
+        await writeQueueItemPrintLog(item, "Success", "Direct ZPL sent_to_printer; physical print not confirmed");
+
+        logInfo(
+          "zpl_queue_item_sent_to_printer",
+          { station: item.station, lotNumber: item.lotNumber, box: item.box, rfid: item.rfid, printerIp: item.printerIp, printerPort: item.printerPort, itemId: item.itemId, jobId: item.jobId },
+          `[PrintSvc] Direct ZPL queue item sent_to_printer itemId=${item.itemId} station=${item.station} lot=${item.lotNumber} box=${item.box}`
+        );
+      } catch (error) {
+        if (error.code === "ZPL_SEND_UNKNOWN") {
+          item = {
+            ...item,
+            status: "unknown_after_send",
+            unknownAt: isoNow(),
+            lastError: serializeQueueError(error),
+            operatorAction: error.operatorAction || "Verify whether the label physically printed before retrying."
+          };
+          item = writeZplQueueItem(item);
+          if (queueItemUsesDuplicateGuard(item)) markRecentZplSendAccepted(item);
+          state.paused = true;
+          state.phase = "paused";
+          state.lastError = item.lastError;
+
+          await writeQueueItemPrintLog(item, "Unknown", item.operatorAction);
+
+          logError(
+            "zpl_queue_item_unknown_after_send",
+            { station: item.station, lotNumber: item.lotNumber, box: item.box, rfid: item.rfid, printerIp: item.printerIp, printerPort: item.printerPort, itemId: item.itemId, jobId: item.jobId, operatorAction: item.operatorAction, error: item.lastError },
+            `[PrintSvc] Direct ZPL queue item unknown_after_send itemId=${item.itemId} station=${item.station} lot=${item.lotNumber} box=${item.box}`
+          );
+          logWarn(
+            "zpl_queue_worker_paused",
+            { printerKey, itemId: item.itemId, jobId: item.jobId, operatorAction: item.operatorAction },
+            `[PrintSvc] Direct ZPL worker paused printerKey=${printerKey}; operator verification required`
+          );
+          break;
+        }
+
+        item = {
+          ...item,
+          status: error.code === "DUPLICATE_RECENT_ZPL" ? "rejected" : "failed_before_send",
+          failedAt: isoNow(),
+          lastError: serializeQueueError(error)
+        };
+        item = writeZplQueueItem(item);
+        state.lastError = item.lastError;
+
+        await writeQueueItemPrintLog(item, item.status === "rejected" ? "Rejected" : "Failed", error.message);
+
+        const eventName = item.status === "rejected" ? "duplicate_recent_zpl_rejected" : "zpl_queue_item_failed_before_send";
+        logError(
+          eventName,
+          { station: item.station, lotNumber: item.lotNumber, box: item.box, rfid: item.rfid, printerIp: item.printerIp, printerPort: item.printerPort, itemId: item.itemId, jobId: item.jobId, error: item.lastError },
+          `[PrintSvc] Direct ZPL queue item ${item.status} itemId=${item.itemId} station=${item.station} lot=${item.lotNumber} box=${item.box}: ${error.message}`
+        );
+      } finally {
+        state.activeItem = null;
+      }
+
+      if (didSendToPrinter) {
+        const spacingMs = getZplLabelSpacingMs();
+        state.phase = spacingMs > 0 ? "waiting_between_labels" : "running";
+        state.waitingUntil = spacingMs > 0 ? new Date(Date.now() + spacingMs).toISOString() : null;
+        await sleep(spacingMs);
+        state.waitingUntil = null;
+      }
+    }
+  } finally {
+    if (!isCurrentZplWorkerState(printerKey, state)) return;
+
+    state.running = false;
+    state.activeItem = null;
+    if (!state.paused) state.activeBatch = null;
+    state.phase = state.paused ? "paused" : "idle";
+    state.waitingUntil = null;
+    if (!state.paused && getZplSocketMode() === "persistent" && !getNextQueuedZplItem(printerKey)) {
+      scheduleZplPersistentSocketIdleClose(printerKey);
+    }
+    if (!state.paused && getNextQueuedZplItem(printerKey)) {
+      setImmediate(() => startZplQueueWorkerForPrinter(printerKey));
+    }
+  }
+}
+
+function startZplQueueWorkerForPrinter(printerKey) {
+  const state = getOrCreateZplWorkerState(printerKey);
+  if (state.running || state.paused) return;
+  state.running = true;
+  processZplQueueForPrinter(printerKey).catch((error) => {
+    state.running = false;
+    state.lastError = serializeQueueError(error);
+    logError("zpl_queue_worker_error", { printerKey, message: error.message, code: error.code || null }, `[PrintSvc] Direct ZPL queue worker error printerKey=${printerKey}: ${error.message}`);
+  });
+}
+
+function recoverStaleSendingItem(item, { nowMs = Date.now(), reason = "stale sending item recovered" } = {}) {
+  if (!item || item.status !== "sending") return null;
+
+  const noBytesWritten = queueItemProvesNoBytesWritten(item);
+  const operatorAction = "Verify whether this label physically printed before resuming.";
+  const nextStatus = noBytesWritten ? "failed_before_send" : "unknown_after_send";
+  const lastError = noBytesWritten
+    ? {
+        code: "ZPL_FAILED_BEFORE_SEND",
+        message: "PrintSvc recovered a stale sending queue item that proved no TCP write started.",
+        details: getQueueItemSendDetails(item),
+        retryable: true
+      }
+    : {
+        code: "ZPL_SEND_UNKNOWN",
+        message: "PrintSvc recovered a stale sending queue item after restart or worker interruption.",
+        retryable: false
+      };
+
+  const next = writeZplQueueItem({
+    ...item,
+    status: nextStatus,
+    recoveredAt: new Date(nowMs).toISOString(),
+    recoveredFromStatus: item.status,
+    recoveryReason: reason,
+    unknownAt: nextStatus === "unknown_after_send" ? new Date(nowMs).toISOString() : item.unknownAt,
+    failedAt: nextStatus === "failed_before_send" ? new Date(nowMs).toISOString() : item.failedAt,
+    lastError,
+    operatorAction: nextStatus === "unknown_after_send" ? operatorAction : item.operatorAction || null
+  });
+
+  if (nextStatus === "unknown_after_send") {
+    markRecentZplSendAccepted(next, nowMs);
+    const state = getOrCreateZplWorkerState(next.printerKey);
+    state.paused = true;
+    state.lastError = next.lastError;
+  } else {
+    const state = getOrCreateZplWorkerState(next.printerKey);
+    state.paused = false;
+    state.lastError = next.lastError;
+  }
+
+  logWarn(
+    "zpl_queue_recovered_stale_sending",
+    {
+      itemId: next.itemId,
+      jobId: next.jobId,
+      station: next.station,
+      lotNumber: next.lotNumber,
+      box: next.box,
+      rfid: next.rfid,
+      printerIp: next.printerIp,
+      printerPort: next.printerPort,
+      oldStatus: "sending",
+      newStatus: next.status,
+      operatorAction: next.operatorAction || null,
+      safeToRetry: isQueueItemSafeToRetry(next)
+    },
+    `[PrintSvc] Recovered stale ZPL sending item itemId=${next.itemId} status=${next.status} station=${next.station} lot=${next.lotNumber} box=${next.box}`
+  );
+
+  return next;
+}
+
+function scheduleStaleSendingRecovery(item, nowMs = Date.now()) {
+  if (!item?.itemId || zplStaleSendingRecoveryTimers.has(item.itemId)) return;
+  const startedAtMs = getQueueItemStartedAtMs(item);
+  const thresholdMs = getZplStaleSendingThresholdMs();
+  const delayMs = Math.max(1, startedAtMs + thresholdMs - nowMs);
+
+  const timer = setTimeout(() => {
+    zplStaleSendingRecoveryTimers.delete(item.itemId);
+    recoverStaleSendingItems({ nowMs: Date.now(), reason: "stale sending threshold elapsed" });
+  }, delayMs);
+  if (typeof timer.unref === "function") timer.unref();
+  zplStaleSendingRecoveryTimers.set(item.itemId, timer);
+}
+
+function recoverStaleSendingItems({ nowMs = Date.now(), reason = "startup stale sending recovery" } = {}) {
+  const recovered = [];
+  const thresholdMs = getZplStaleSendingThresholdMs();
+
+  for (const item of listZplQueueItems()) {
+    if (item.status !== "sending") continue;
+
+    const state = getOrCreateZplWorkerState(item.printerKey);
+    const isActiveItem = state.activeItem?.itemId === item.itemId;
+    const isActiveBatchItem = Array.isArray(state.activeBatch?.itemIds) && state.activeBatch.itemIds.includes(item.itemId);
+    if (state.running && (isActiveItem || isActiveBatchItem)) {
+      continue;
+    }
+
+    state.paused = true;
+    state.lastError = item.lastError || {
+      code: "ZPL_QUEUE_SENDING_RECOVERY_PENDING",
+      message: "Queue item was found in sending status; waiting for stale threshold before recovery.",
+      retryable: false
+    };
+
+    const ageMs = nowMs - getQueueItemStartedAtMs(item);
+    if (ageMs >= thresholdMs) {
+      const timer = zplStaleSendingRecoveryTimers.get(item.itemId);
+      if (timer) clearTimeout(timer);
+      zplStaleSendingRecoveryTimers.delete(item.itemId);
+      const next = recoverStaleSendingItem(item, { nowMs, reason });
+      if (next) recovered.push(next);
+    } else {
+      scheduleStaleSendingRecovery(item, nowMs);
+    }
+  }
+
+  return recovered;
+}
+
+function startAllZplQueueWorkers() {
+  recoverStaleSendingItems({ reason: "startup stale sending recovery" });
+  const items = listZplQueueItems();
+  const queued = items.filter((item) => item.status === "queued");
+  const keys = new Set(queued.map((item) => item.printerKey).filter(Boolean));
+
+  for (const item of items) {
+    if (item.status === "sending") {
+      const state = getOrCreateZplWorkerState(item.printerKey);
+      state.paused = true;
+      state.lastError = state.lastError || {
+        code: "ZPL_QUEUE_SENDING_RECOVERY_PENDING",
+        message: "Queue item is still within the stale sending threshold.",
+        retryable: false
+      };
+      continue;
+    }
+
+    if (item.status === "unknown_after_send" && !item.operatorReviewedAt) {
+      const state = getOrCreateZplWorkerState(item.printerKey);
+      state.paused = true;
+      state.lastError = item.lastError || null;
+    }
+  }
+
+  for (const key of keys) {
+    startZplQueueWorkerForPrinter(key);
+  }
+}
+
+function getZplQueueStatusPayload() {
+  recoverStaleSendingItems({ reason: "status stale sending recovery" });
+  const items = listZplQueueItems();
+  const byPrinter = {};
+
+  for (const item of items) {
+    const key = item.printerKey || `${item.printerIp}:${item.printerPort}`;
+    if (!byPrinter[key]) {
+      byPrinter[key] = {
+        printerKey: key,
+        printerIp: item.printerIp,
+        printerPort: item.printerPort,
+        socketMode: getZplSocketMode(),
+        socketState: getZplPersistentSocketStatus(key),
+        counts: queueStatusCounts(),
+        itemsByStatus: DIRECT_ZPL_QUEUE_STATUSES.reduce((acc, status) => {
+          acc[status] = [];
+          return acc;
+        }, {}),
+        activeItem: null,
+        activeBatch: null,
+        lastBatchDurationMs: null,
+        paused: false,
+        lastError: null,
+        staleItems: [],
+        recoveredItems: [],
+        reviewRequiredItems: [],
+        safeRetryItems: [],
+        recent: []
+      };
+    }
+
+    byPrinter[key].counts[item.status] = (byPrinter[key].counts[item.status] || 0) + 1;
+    byPrinter[key].queueDepth = getQueuedZplItemDepth(key);
+    const summary = summarizeZplQueueItem(item);
+    if (byPrinter[key].itemsByStatus[item.status]) {
+      byPrinter[key].itemsByStatus[item.status].push(summary);
+    }
+    if (item.status === "sending" && Date.now() - getQueueItemStartedAtMs(item) >= getZplStaleSendingThresholdMs()) {
+      byPrinter[key].staleItems.push(summary);
+    }
+    if (item.recoveredAt) {
+      byPrinter[key].recoveredItems.push(summary);
+    }
+    if (item.status === "unknown_after_send" && !item.operatorReviewedAt) {
+      const state = getOrCreateZplWorkerState(key);
+      state.paused = true;
+      state.lastError = item.lastError || state.lastError || null;
+      byPrinter[key].reviewRequiredItems.push(summary);
+    }
+    if (isQueueItemSafeToRetry(item)) {
+      byPrinter[key].safeRetryItems.push(summary);
+    }
+    if (["sent_to_printer", "unknown_after_send"].includes(item.status)) {
+      byPrinter[key].recent.push(summary);
+    }
+  }
+
+  for (const [key, state] of zplQueueWorkers.entries()) {
+    if (!byPrinter[key]) {
+      byPrinter[key] = {
+        printerKey: key,
+        socketMode: getZplSocketMode(),
+        socketState: getZplPersistentSocketStatus(key),
+        counts: queueStatusCounts(),
+        itemsByStatus: DIRECT_ZPL_QUEUE_STATUSES.reduce((acc, status) => {
+          acc[status] = [];
+          return acc;
+        }, {}),
+        activeItem: null,
+        activeBatch: null,
+        lastBatchDurationMs: null,
+        paused: false,
+        lastError: null,
+        staleItems: [],
+        recoveredItems: [],
+        reviewRequiredItems: [],
+        safeRetryItems: [],
+        recent: []
+      };
+    }
+    byPrinter[key].activeItem = state.activeItem ? summarizeZplQueueItem(state.activeItem) : null;
+    byPrinter[key].activeBatch = state.activeBatch || null;
+    byPrinter[key].lastBatchDurationMs = state.lastBatchDurationMs ?? null;
+    byPrinter[key].paused = state.paused === true;
+    byPrinter[key].running = state.running === true;
+    byPrinter[key].phase = state.paused ? "paused" : (state.phase || (state.running ? "running" : "idle"));
+    byPrinter[key].waitingUntil = state.waitingUntil || null;
+    byPrinter[key].lastError = state.lastError || null;
+    byPrinter[key].socketMode = getZplSocketMode();
+    byPrinter[key].socketState = getZplPersistentSocketStatus(key);
+  }
+
+  for (const printer of Object.values(byPrinter)) {
+    if (!printer.phase) {
+      if (printer.paused) printer.phase = "paused";
+      else if (printer.counts.sending > 0) printer.phase = "sending";
+      else if (printer.counts.queued > 0) printer.phase = "idle";
+      else printer.phase = "idle";
+    }
+    if (!Object.prototype.hasOwnProperty.call(printer, "queueDepth")) {
+      printer.queueDepth = getQueuedZplItemDepth(printer.printerKey);
+    }
+    printer.socketMode = getZplSocketMode();
+    printer.socketState = getZplPersistentSocketStatus(printer.printerKey);
+    printer.recent.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+    printer.recent = printer.recent.slice(0, 20);
+    printer.recoveredItems.sort((a, b) => String(b.recoveredAt || "").localeCompare(String(a.recoveredAt || "")));
+    printer.safeRetryItems.sort((a, b) => String(a.updatedAt || "").localeCompare(String(b.updatedAt || "")));
+  }
+
+  return {
+    ok: true,
+    printEngine: getPrintEngineHealth().printEngine,
+    directZplEnabledScopes: getDirectZplEnabledScopes(),
+    zplQueueEnabled: true,
+    zplQueuePath: ZPL_QUEUE_DIR,
+    zplStaleSendingThresholdMs: getZplStaleSendingThresholdMs(),
+    socketMode: getZplSocketMode(),
+    zplSocketMode: getZplSocketMode(),
+    zplMaxLabelsPerConnection: getZplMaxLabelsPerConnection(),
+    zplSocketIdleCloseMs: getZplSocketIdleCloseMs(),
+    zplBatchMaxLabels: getZplBatchMaxLabels(),
+    zplBatchCollectMs: getZplBatchCollectMs(),
+    zplBatchInterBatchDelayMs: getZplBatchInterBatchDelayMs(),
+    zplBatchMaxBytes: getZplBatchMaxBytes(),
+    activeSockets: getZplPersistentSocketStatusForAll(),
+    pausedPrinterKeys: Object.entries(byPrinter).filter(([, value]) => value.paused).map(([key]) => key),
+    printers: byPrinter
+  };
+}
+
+function getPrintSvcLogPath() {
+  return process.env.PRINTSVC_LOG_PATH || PRINTSVC_LOG_PATH;
+}
+
+function normalizeLogTail(value) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number <= 0) return PRINTSVC_LOG_TAIL_DEFAULT;
+  return Math.min(number, PRINTSVC_LOG_TAIL_MAX);
+}
+
+function readTailLogLines(filePath, tail) {
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return { exists: false, filePath, readBytes: 0, lines: [] };
+    }
+    throw error;
+  }
+
+  if (!stat.isFile()) {
+    throw httpError(400, "PRINT_LOG_PATH_INVALID", "PrintSvc log path is not a file.");
+  }
+
+  const desiredBytes = Math.min(
+    stat.size,
+    PRINTSVC_LOG_READ_MAX_BYTES,
+    Math.max(64 * 1024, tail * 2048)
+  );
+  const start = Math.max(0, stat.size - desiredBytes);
+  const buffer = Buffer.alloc(desiredBytes);
+  const fd = fs.openSync(filePath, "r");
+  let bytesRead = 0;
+  try {
+    bytesRead = fs.readSync(fd, buffer, 0, desiredBytes, start);
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  let text = buffer.slice(0, bytesRead).toString("utf8");
+  if (start > 0) {
+    const firstNewline = text.search(/\r?\n/);
+    text = firstNewline >= 0 ? text.slice(firstNewline + (text[firstNewline] === "\r" && text[firstNewline + 1] === "\n" ? 2 : 1)) : "";
+  }
+
+  const lines = text.split(/\r?\n/).filter((line) => line.trim()).slice(-tail);
+  return { exists: true, filePath, readBytes: bytesRead, lines };
+}
+
+function redactLogValue(value) {
+  if (Array.isArray(value)) return value.map(redactLogValue);
+  if (!value || typeof value !== "object") return value;
+
+  const output = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (/password|secret|token|authorization|cookie/i.test(key)) {
+      output[key] = "[redacted]";
+    } else {
+      output[key] = redactLogValue(child);
+    }
+  }
+  return output;
+}
+
+function redactRawLogLine(line) {
+  return String(line || "")
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[redacted]")
+    .replace(/((?:password|secret|token|authorization|cookie)\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]");
+}
+
+function logRecordFieldMatches(record, field, expected) {
+  const value = record?.[field];
+  if (value === undefined || value === null) return false;
+  const expectedText = String(expected).toLowerCase();
+  if (Array.isArray(value)) {
+    return value.some((entry) => String(entry ?? "").toLowerCase() === expectedText);
+  }
+  return String(value).toLowerCase() === expectedText;
+}
+
+function parsePrintLogLine(line, index) {
+  const raw = redactRawLogLine(line);
+  const trimmed = raw.trim();
+  try {
+    const record = redactLogValue(JSON.parse(trimmed));
+    return {
+      index,
+      parsed: true,
+      timestamp: record.timestamp || null,
+      level: record.level || null,
+      event: record.event || null,
+      station: record.station || null,
+      family: record.family || null,
+      lotNumber: record.lotNumber || null,
+      printerIp: record.printerIp || null,
+      record
+    };
+  } catch {
+    return {
+      index,
+      parsed: false,
+      timestamp: null,
+      level: null,
+      event: null,
+      raw
+    };
+  }
+}
+
+function logEntryMatchesFilters(entry, filters) {
+  const record = entry.record || {};
+  const rawSearchText = `${entry.raw || ""} ${entry.parsed ? JSON.stringify(record) : ""}`.toLowerCase();
+
+  for (const field of ["event", "level", "station", "family", "lotNumber", "printerIp"]) {
+    const expected = filters[field];
+    if (!expected) continue;
+    if (!entry.parsed || !logRecordFieldMatches(record, field, expected)) return false;
+  }
+
+  if (filters.search && !rawSearchText.includes(filters.search.toLowerCase())) return false;
+  return true;
+}
+
+function getPrintLogsPayload(query = {}) {
+  const tail = normalizeLogTail(query.tail);
+  const filters = {
+    event: trimString(query.event),
+    level: trimString(query.level),
+    station: trimString(query.station),
+    family: trimString(query.family),
+    lotNumber: trimString(query.lotNumber),
+    printerIp: trimString(query.printerIp),
+    search: trimString(query.search)
+  };
+  const source = readTailLogLines(getPrintSvcLogPath(), tail);
+  const entries = source.lines
+    .map((line, index) => parsePrintLogLine(line, index))
+    .filter((entry) => logEntryMatchesFilters(entry, filters));
+
+  return {
+    ok: true,
+    logPath: source.filePath,
+    exists: source.exists,
+    tail,
+    readBytes: source.readBytes,
+    filters,
+    count: entries.length,
+    lines: entries
+  };
+}
+
+function deepCloneJson(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function deepMergePlainObjects(base = {}, override = {}) {
+  const output = { ...(base || {}) };
+  for (const [key, value] of Object.entries(override || {})) {
+    if (isPlainObject(value) && isPlainObject(output[key])) {
+      output[key] = deepMergePlainObjects(output[key], value);
+    } else if (isPlainObject(value)) {
+      output[key] = deepMergePlainObjects({}, value);
+    } else if (Array.isArray(value)) {
+      output[key] = value.map((entry) => (isPlainObject(entry) ? deepMergePlainObjects({}, entry) : entry));
+    } else if (value !== undefined) {
+      output[key] = value;
+    }
+  }
+  return output;
+}
+
+function readTemplateLabProfileConfig() {
+  try {
+    if (!fs.existsSync(ZPL_TEMPLATE_LAB_PROFILE_PATH)) {
+      return { profiles: {} };
+    }
+    const parsed = JSON.parse(fs.readFileSync(ZPL_TEMPLATE_LAB_PROFILE_PATH, "utf8"));
+    return isPlainObject(parsed) ? { profiles: isPlainObject(parsed.profiles) ? parsed.profiles : {} } : { profiles: {} };
+  } catch (error) {
+    logWarn("template_lab_profile_config_read_failed", {
+      profilePath: ZPL_TEMPLATE_LAB_PROFILE_PATH,
+      message: error.message
+    });
+    return { profiles: {} };
+  }
+}
+
+function writeTemplateLabProfileConfig(config) {
+  fs.mkdirSync(path.dirname(ZPL_TEMPLATE_LAB_PROFILE_PATH), { recursive: true });
+  fs.writeFileSync(ZPL_TEMPLATE_LAB_PROFILE_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+}
+
+function parseJsonObjectField(value, fieldName) {
+  if (value === undefined || value === null || value === "") return {};
+  if (isPlainObject(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (isPlainObject(parsed)) return parsed;
+    } catch (error) {
+      throw httpError(400, "VALIDATION_ERROR", `${fieldName} must be valid JSON.`);
+    }
+  }
+  throw httpError(400, "VALIDATION_ERROR", `${fieldName} must be an object.`);
+}
+
+function numberFromInput(value, options = {}) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return undefined;
+  if (Number.isFinite(options.min) && number < options.min) return undefined;
+  if (Number.isFinite(options.max) && number > options.max) return undefined;
+  return options.integer ? Math.round(number) : number;
+}
+
+function setIfNumber(target, key, value, options = {}) {
+  const number = numberFromInput(value, options);
+  if (number !== undefined) target[key] = number;
+}
+
+function buildFieldFitOverrideFromInput(input = {}, prefix) {
+  const output = {};
+  setIfNumber(output, "boxWidth", input[`${prefix}BoxWidth`], { min: 1, integer: true });
+  setIfNumber(output, "maxChars", input[`${prefix}MaxChars`], { min: 1, integer: true });
+  setIfNumber(output, "maxLines", input[`${prefix}MaxLines`], { min: 1, max: 6, integer: true });
+  const alignment = trimString(input[`${prefix}Alignment`]).toUpperCase();
+  if (["L", "C", "R", "J"].includes(alignment)) output.alignment = alignment;
+  for (const tier of ["large", "medium", "small", "min"]) {
+    const tierOutput = {};
+    const inputPrefix = `${prefix}${tier.charAt(0).toUpperCase()}${tier.slice(1)}`;
+    setIfNumber(tierOutput, "fontH", input[`${inputPrefix}FontH`], { min: 1, integer: true });
+    setIfNumber(tierOutput, "fontW", input[`${inputPrefix}FontW`], { min: 1, integer: true });
+    if (Object.keys(tierOutput).length) output[tier] = tierOutput;
+  }
+  return output;
+}
+
+function buildProfileOverridesFromInput(input = {}) {
+  const overrides = deepCloneJson(parseJsonObjectField(input.profileOverrides, "profileOverrides"));
+  setIfNumber(overrides, "scaleX", input.scaleX, { min: 0.1, max: 5 });
+  setIfNumber(overrides, "scaleY", input.scaleY, { min: 0.1, max: 5 });
+  setIfNumber(overrides, "offsetX", input.offsetX, { min: -5000, max: 5000, integer: true });
+  setIfNumber(overrides, "offsetY", input.offsetY, { min: -5000, max: 5000, integer: true });
+
+  const qr = {};
+  setIfNumber(qr, "x", input.qrX, { min: -5000, max: 5000, integer: true });
+  setIfNumber(qr, "y", input.qrY, { min: -5000, max: 5000, integer: true });
+  setIfNumber(qr, "magnification", input.qrMagnification, { min: 1, max: 20, integer: true });
+  if (Object.keys(qr).length) overrides.qr = deepMergePlainObjects(overrides.qr || {}, qr);
+
+  const logo = {};
+  setIfNumber(logo, "x", input.logoX, { min: -5000, max: 5000, integer: true });
+  setIfNumber(logo, "y", input.logoY, { min: -5000, max: 5000, integer: true });
+  setIfNumber(logo, "scale", input.logoScale, { min: 0.25, max: 6 });
+  setIfNumber(logo, "widthDots", input.logoWidthDots, { min: 1, max: 2000, integer: true });
+  setIfNumber(logo, "heightDots", input.logoHeightDots, { min: 1, max: 2000, integer: true });
+  if (Object.keys(logo).length) overrides.logo = deepMergePlainObjects(overrides.logo || {}, logo);
+
+  const fieldFitDefinitions = {};
+  for (const prefix of ["color", "colorSmall", "materialType", "materialTypeSmall", "tolling", "productDescription"]) {
+    const fieldOverride = buildFieldFitOverrideFromInput(input, prefix);
+    if (Object.keys(fieldOverride).length) fieldFitDefinitions[prefix] = fieldOverride;
+  }
+  if (Object.keys(fieldFitDefinitions).length) {
+    overrides.fieldFitDefinitions = deepMergePlainObjects(overrides.fieldFitDefinitions || {}, fieldFitDefinitions);
+  }
+
+  const fieldPositionOverrides = {};
+  for (const prefix of ["color", "colorSmall", "materialType", "materialTypeSmall", "tolling", "productDescription"]) {
+    const position = {};
+    setIfNumber(position, "x", input[`${prefix}X`], { min: -5000, max: 5000, integer: true });
+    setIfNumber(position, "y", input[`${prefix}Y`], { min: -5000, max: 5000, integer: true });
+    if (Object.keys(position).length) fieldPositionOverrides[prefix] = position;
+  }
+  if (Object.keys(fieldPositionOverrides).length) {
+    overrides.fieldPositionOverrides = deepMergePlainObjects(overrides.fieldPositionOverrides || {}, fieldPositionOverrides);
+  }
+
+  return overrides;
+}
+
+function getSavedTemplateLabProfileOverrides(profileKey) {
+  const config = readTemplateLabProfileConfig();
+  return deepCloneJson(config.profiles?.[String(profileKey || "").toUpperCase()] || {});
+}
+
+function buildEffectiveTemplateLabProfile(profileKey, fallbackProfileKey, inlineOverrides = {}) {
+  const key = String(profileKey || fallbackProfileKey || "").trim().toUpperCase();
+  const base = getStationProfile(key) || getStationProfile(fallbackProfileKey);
+  if (!base) return null;
+
+  const savedOverrides = getSavedTemplateLabProfileOverrides(base.key);
+  const profile = deepMergePlainObjects(base, savedOverrides);
+  const merged = deepMergePlainObjects(profile, inlineOverrides);
+  merged.key = base.key;
+  merged.labOnly = true;
+  merged.savedOverrides = savedOverrides;
+  merged.inlineOverrides = inlineOverrides;
+  merged.effectiveFieldFitDefinitions = getFittedFieldDefinitions(merged.fieldFitDefinitions || {});
+  return merged;
+}
+
+function getTemplateLabCatalogPayload() {
+  const savedConfig = readTemplateLabProfileConfig();
+  const profiles = listStationProfiles().map((profile) => {
+    const effective = buildEffectiveTemplateLabProfile(profile.key, profile.key, {});
+    return {
+      ...effective,
+      profileConfigPath: ZPL_TEMPLATE_LAB_PROFILE_PATH,
+      savedOverrides: savedConfig.profiles?.[profile.key] || {}
+    };
+  });
+
+  return {
+    ok: true,
+    templates: listTemplateLabTemplates(),
+    profiles,
+    profileConfigPath: ZPL_TEMPLATE_LAB_PROFILE_PATH,
+    previewRendererConfigured: Boolean(trimString(process.env.ZPL_PREVIEW_RENDERER_URL))
+  };
+}
+
+function normalizeTemplateLabTemplateName(value) {
+  const name = path.basename(trimString(value));
+  if (!name) throw httpError(400, "VALIDATION_ERROR", "template is required.");
+  const definition = getTemplateDefinition(name);
+  if (!definition) {
+    throw httpError(400, "UNSUPPORTED_TEMPLATE", "Template Lab can only render approved direct-ZPL templates.", {
+      template: name,
+      supportedTemplates: listTemplateLabTemplates().map((template) => template.name)
+    });
+  }
+  return { name, definition, templatePath: path.join(ZPL_TEMPLATE_REPO_DIR, name) };
+}
+
+function buildTemplateLabData(input = {}, templateDefinition = {}) {
+  const lotNumber = trimString(input.lotNumber) || "PT000086";
+  const boxNumber = trimString(input.boxNumber || input.box || input.firstBox) || "52";
+  const resolvedRfid = trimString(input.rfid) || `${lotNumber}-B${pad2(boxNumber)}`;
+
+  return {
+    lotNumber,
+    boxNumber,
+    rfid: resolvedRfid,
+    pounds: trimString(input.pounds) || "_",
+    materialType: trimString(input.materialType || input.material || input.type) || (templateDefinition.family === "FG" ? "PELLET" : "RAW"),
+    color: trimString(input.color) || "BLACK",
+    po: trimString(input.po || input.purchaseOrder) || "PO12345",
+    productCode: trimString(input.productCode || input.prodnum) || "PROD001",
+    productName: trimString(input.productName || input.product) || "Template Lab Product",
+    productDescription: trimString(input.productDescription || input.prodname || input.product) || "Template Lab Product",
+    tolling: trimString(input.tolling),
+    erp: trimString(input.erp) || "LAB",
+    qrData: lotNumber,
+    machine: trimString(input.machine) || "P3 EXT",
+    company: trimString(input.company),
+    labelType: trimString(input.labelType),
+    sampleType: trimString(input.sampleType),
+    sampleTime: trimString(input.sampleTime || input.sampleLabel || input.box) || boxNumber,
+    sampleLabel: trimString(input.sampleLabel || input.box) || boxNumber,
+    frequencyCheck: trimString(input.frequencyCheck || input.pounds) || "5000",
+    printedDate: trimString(input.printedDate) || new Date().toLocaleDateString("en-US")
+  };
+}
+
+function replaceLastCoordinateBeforeToken(source, token, position = {}) {
+  const text = String(source || "");
+  const tokenIndex = text.indexOf(token);
+  if (tokenIndex < 0) return text;
+  const searchStart = Math.max(0, tokenIndex - 260);
+  const beforeToken = text.slice(searchStart, tokenIndex);
+  const matches = Array.from(beforeToken.matchAll(/\^(FO|FT)(-?\d+),(-?\d+)/g));
+  if (!matches.length) return text;
+  const match = matches[matches.length - 1];
+  const absoluteStart = searchStart + match.index;
+  const absoluteEnd = absoluteStart + match[0].length;
+  const x = Number.isFinite(position.x) ? position.x : Number(match[2]);
+  const y = Number.isFinite(position.y) ? position.y : Number(match[3]);
+  return `${text.slice(0, absoluteStart)}^${match[1]}${Math.round(x)},${Math.round(y)}${text.slice(absoluteEnd)}`;
+}
+
+function applyFieldPositionOverridesToTemplateSource(templateText, fieldPositionOverrides = {}) {
+  const tokenByField = {
+    color: "{{colorText}}",
+    colorSmall: "{{colorSmallText}}",
+    materialType: "{{materialTypeText}}",
+    materialTypeSmall: "{{materialTypeSmallText}}",
+    tolling: "{{tollingText}}",
+    productDescription: "{{productDescriptionText}}"
+  };
+  let output = String(templateText || "");
+  for (const [field, position] of Object.entries(fieldPositionOverrides || {})) {
+    if (!tokenByField[field] || !isPlainObject(position)) continue;
+    output = replaceLastCoordinateBeforeToken(output, tokenByField[field], position);
+  }
+  return output;
+}
+
+function roundedScaled(value, scale, offset = 0, options = {}) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return value;
+  if (options.preserveZero && numeric === 0) return 0;
+  return Math.max(options.min ?? 0, Math.round((numeric * scale) + offset));
+}
+
+function applyGlobalTemplateLabTransform(renderedZpl, profile = {}) {
+  const scaleX = Number(profile.scaleX || 1);
+  const scaleY = Number(profile.scaleY || 1);
+  const offsetX = Number(profile.offsetX || 0);
+  const offsetY = Number(profile.offsetY || 0);
+  if (scaleX === 1 && scaleY === 1 && offsetX === 0 && offsetY === 0) return renderedZpl;
+
+  const lineScale = Math.max(1, Math.round((scaleX + scaleY) / 2));
+  return String(renderedZpl || "")
+    .replace(/\^(FO|FT)(-?\d+),(-?\d+)/g, (_match, command, x, y) =>
+      `^${command}${roundedScaled(x, scaleX, offsetX)},${roundedScaled(y, scaleY, offsetY)}`
+    )
+    .replace(/\^GB(-?\d+),(-?\d+),(\d+)/g, (_match, width, height, thickness) =>
+      `^GB${roundedScaled(width, scaleX, 0, { preserveZero: true })},${roundedScaled(height, scaleY, 0, { preserveZero: true })},${roundedScaled(thickness, lineScale, 0, { min: 1 })}`
+    )
+    .replace(/\^A0N,(\d+),(\d+)/g, (_match, height, width) =>
+      `^A0N,${roundedScaled(height, scaleY, 0, { min: 1 })},${roundedScaled(width, scaleX, 0, { min: 1 })}`
+    )
+    .replace(/\^FB(\d+),/g, (_match, width) =>
+      `^FB${roundedScaled(width, scaleX, 0, { min: 1 })},`
+    );
+}
+
+function applyQrOverrideToRenderedZpl(renderedZpl, profile = {}) {
+  const qr = profile.qr || {};
+  return String(renderedZpl || "").replace(
+    /\^FO(-?\d+),(-?\d+)\r?\n\^BQN,2,(\d+)\^FDLA,([^^]+)\^FS/,
+    (match, currentX, currentY, currentMagnification, payload) => {
+      const x = Number.isFinite(qr.x) ? qr.x : Number(currentX);
+      const y = Number.isFinite(qr.y) ? qr.y : Number(currentY);
+      const magnification = Number.isFinite(qr.magnification) ? qr.magnification : Number(currentMagnification);
+      return `^FO${Math.round(x)},${Math.round(y)}\n^BQN,2,${Math.round(magnification)}^FDLA,${payload}^FS`;
+    }
+  );
+}
+
+function readGfaBits(bytesPerRow, data) {
+  const bytes = Buffer.from(String(data || ""), "hex");
+  const height = Math.floor(bytes.length / bytesPerRow);
+  const width = bytesPerRow * 8;
+  const bits = [];
+  for (let y = 0; y < height; y++) {
+    const row = [];
+    for (let x = 0; x < width; x++) {
+      const byte = bytes[(y * bytesPerRow) + Math.floor(x / 8)];
+      row.push((byte & (1 << (7 - (x % 8)))) ? 1 : 0);
+    }
+    bits.push(row);
+  }
+  return { bits, width, height };
+}
+
+function buildGfaFromBits(bits, width, height) {
+  const bytesPerRow = Math.ceil(width / 8);
+  const bytes = [];
+  for (let y = 0; y < height; y++) {
+    for (let byteX = 0; byteX < bytesPerRow; byteX++) {
+      let byte = 0;
+      for (let bit = 0; bit < 8; bit++) {
+        const x = (byteX * 8) + bit;
+        if (x < width && bits[y]?.[x]) {
+          byte |= 1 << (7 - bit);
+        }
+      }
+      bytes.push(byte);
+    }
+  }
+  const total = bytesPerRow * height;
+  const data = Buffer.from(bytes).toString("hex").toUpperCase();
+  return `^GFA,${total},${total},${bytesPerRow},${data}`;
+}
+
+function scaleGfaCommand(gfaCommand, widthDots, heightDots) {
+  const match = String(gfaCommand || "").match(/\^GFA,(\d+),(\d+),(\d+),([0-9A-Fa-f]+)/);
+  if (!match) return gfaCommand;
+  const bytesPerRow = Number(match[3]);
+  const { bits, width, height } = readGfaBits(bytesPerRow, match[4]);
+  const targetWidth = Math.max(1, Math.round(widthDots || width));
+  const targetHeight = Math.max(1, Math.round(heightDots || height));
+  if (targetWidth === width && targetHeight === height) return gfaCommand;
+
+  const scaledBits = [];
+  for (let y = 0; y < targetHeight; y++) {
+    const sourceY = Math.min(height - 1, Math.floor((y * height) / targetHeight));
+    const row = [];
+    for (let x = 0; x < targetWidth; x++) {
+      const sourceX = Math.min(width - 1, Math.floor((x * width) / targetWidth));
+      row.push(bits[sourceY]?.[sourceX] ? 1 : 0);
+    }
+    scaledBits.push(row);
+  }
+  return buildGfaFromBits(scaledBits, targetWidth, targetHeight);
+}
+
+function applyLogoOverrideToRenderedZpl(renderedZpl, profile = {}) {
+  const logo = profile.logo || {};
+  if (logo.mode !== "static logo") return renderedZpl;
+
+  return String(renderedZpl || "").replace(
+    /(\^FX Static PRI logo[^\r\n]*\r?\n)?\^FO(-?\d+),(-?\d+)\r?\n(\^GFA,(\d+),(\d+),(\d+),([0-9A-Fa-f]+))\^FS/,
+    (_match, comment, currentX, currentY, gfaCommand, _totalA, _totalB, currentBytesPerRow, gfaData) => {
+      const sourceWidth = Number(currentBytesPerRow) * 8;
+      const sourceHeight = Math.floor((String(gfaData).length / 2) / Number(currentBytesPerRow));
+      const scale = Number.isFinite(logo.scale) ? Number(logo.scale) : 1;
+      const targetWidth = Number.isFinite(logo.widthDots) ? logo.widthDots : Math.max(1, Math.round(sourceWidth * scale));
+      const targetHeight = Number.isFinite(logo.heightDots) ? logo.heightDots : Math.max(1, Math.round(sourceHeight * scale));
+      const x = Number.isFinite(logo.x) ? logo.x : Number(currentX);
+      const y = Number.isFinite(logo.y) ? logo.y : Number(currentY);
+      const scaled = scaleGfaCommand(gfaCommand, targetWidth, targetHeight);
+      return `${comment || "^FX Static PRI logo template-lab override\n"}^FO${Math.round(x)},${Math.round(y)}\n${scaled}^FS`;
+    }
+  );
+}
+
+function applyTemplateLabRenderedOverrides(renderedZpl, profile = {}) {
+  let output = applyGlobalTemplateLabTransform(renderedZpl, profile);
+  output = applyQrOverrideToRenderedZpl(output, profile);
+  output = applyLogoOverrideToRenderedZpl(output, profile);
+  return output;
+}
+
+function escapeXml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function parseZplNumberList(value) {
+  return String(value || "")
+    .split(",")
+    .map((part) => Number(part.trim()))
+    .map((number) => (Number.isFinite(number) ? number : null));
+}
+
+function parseZplCommandStream(zpl) {
+  const text = String(zpl || "");
+  const commands = [];
+  let index = 0;
+  while (index < text.length) {
+    const start = text.slice(index).search(/[\^~]/);
+    if (start < 0) break;
+    const absoluteStart = index + start;
+    const prefix = text[absoluteStart];
+    const code = text.slice(absoluteStart + 1, absoluteStart + 3);
+    if (code.length < 2) break;
+    let next = absoluteStart + 3;
+    while (next < text.length && text[next] !== "^" && text[next] !== "~") next += 1;
+    const params = text.slice(absoluteStart + 3, next).replace(/\r?\n/g, "");
+    commands.push({ prefix, code, params, raw: `${prefix}${code}${params}` });
+    index = next;
+  }
+  return commands;
+}
+
+function appendSvgText(elements, { x, y, text, fontH, fontW, fieldBlock, reverse }) {
+  const width = Number(fieldBlock?.width);
+  const alignment = String(fieldBlock?.alignment || "L").toUpperCase();
+  let anchor = "start";
+  let textX = x;
+  if (Number.isFinite(width) && alignment === "C") {
+    anchor = "middle";
+    textX = x + (width / 2);
+  } else if (Number.isFinite(width) && alignment === "R") {
+    anchor = "end";
+    textX = x + width;
+  }
+  const family = "Arial, Helvetica, sans-serif";
+  elements.push(`<text x="${Math.round(textX)}" y="${Math.round(y)}" font-family="${family}" font-size="${Math.max(5, Math.round(fontH || 24))}" font-weight="700" text-anchor="${anchor}" fill="${reverse ? "#ffffff" : "#111827"}" data-font-width="${Math.round(fontW || 12)}">${escapeXml(text)}</text>`);
+}
+
+function buildApproximateZplPreview(renderedZpl, profile = {}) {
+  const commands = parseZplCommandStream(renderedZpl);
+  let labelWidth = Number(profile?.labelWidthDots) || 812;
+  let labelHeight = Number(profile?.labelHeightDots) || 1218;
+  const elements = [];
+  const unsupported = new Set();
+  const supportedOrIgnored = new Set(["XA", "XZ", "RS", "RR", "SZ", "JM", "MC", "PM", "JS", "JZ", "LH", "LR", "CI", "PW", "FO", "FT", "GB", "A0", "FB", "FD", "FS", "FR", "BQ", "B3", "BY", "GF", "PQ", "RF"]);
+  const state = {
+    x: 0,
+    y: 0,
+    originMode: "FO",
+    fontH: 24,
+    fontW: 12,
+    fieldBlock: null,
+    reverse: false,
+    barcode: null,
+    qrDetected: false,
+    logoDetected: false,
+    fieldCount: 0
+  };
+
+  for (const command of commands) {
+    const fullCode = `${command.prefix}${command.code}`;
+    if (!supportedOrIgnored.has(command.code)) unsupported.add(fullCode);
+
+    if (command.code === "PW") {
+      const width = Number(command.params);
+      if (Number.isFinite(width) && width > 0) labelWidth = width;
+    } else if (command.code === "FO" || command.code === "FT") {
+      const [x, y] = parseZplNumberList(command.params);
+      if (Number.isFinite(x)) state.x = x;
+      if (Number.isFinite(y)) state.y = y;
+      state.originMode = command.code;
+    } else if (command.code === "GB") {
+      const [widthRaw, heightRaw, thicknessRaw] = parseZplNumberList(command.params);
+      const width = Number(widthRaw) || 0;
+      const height = Number(heightRaw) || 0;
+      const thickness = Math.max(1, Number(thicknessRaw) || 1);
+      if (width === 0 || height === 0) {
+        const x2 = state.x + width;
+        const y2 = state.y + height;
+        elements.push(`<line x1="${Math.round(state.x)}" y1="${Math.round(state.y)}" x2="${Math.round(x2 || state.x)}" y2="${Math.round(y2 || state.y)}" stroke="#111827" stroke-width="${thickness}"/>`);
+      } else {
+        const filled = thickness >= Math.min(Math.abs(width), Math.abs(height)) * 0.45;
+        elements.push(`<rect x="${Math.round(state.x)}" y="${Math.round(state.y)}" width="${Math.abs(Math.round(width))}" height="${Math.abs(Math.round(height))}" fill="${filled ? "#111827" : "none"}" stroke="#111827" stroke-width="${thickness}"/>`);
+      }
+    } else if (command.code === "A0") {
+      const parts = String(command.params || "").split(",");
+      const fontH = Number(parts[1]);
+      const fontW = Number(parts[2]);
+      if (Number.isFinite(fontH)) state.fontH = fontH;
+      if (Number.isFinite(fontW)) state.fontW = fontW;
+    } else if (command.code === "FB") {
+      const parts = String(command.params || "").split(",");
+      const width = Number(parts[0]);
+      state.fieldBlock = {
+        width: Number.isFinite(width) ? width : null,
+        maxLines: Number(parts[1]) || 1,
+        alignment: String(parts[3] || "L").toUpperCase()
+      };
+    } else if (command.code === "FR") {
+      state.reverse = true;
+    } else if (command.code === "BQ") {
+      const parts = String(command.params || "").split(",");
+      state.barcode = { type: "QR", magnification: Number(parts[2]) || 5 };
+    } else if (command.code === "B3") {
+      const parts = String(command.params || "").split(",");
+      state.barcode = { type: "BARCODE", height: Number(parts[2]) || 45 };
+    } else if (command.code === "GF") {
+      const match = command.raw.match(/\^GFA,(\d+),(\d+),(\d+),([0-9A-Fa-f]+)/);
+      const total = Number(match?.[1]);
+      const bytesPerRow = Number(match?.[3]);
+      const width = bytesPerRow ? bytesPerRow * 8 : Number(profile?.logo?.widthDots) || 96;
+      const height = bytesPerRow && total ? Math.max(1, Math.round(total / bytesPerRow)) : Number(profile?.logo?.heightDots) || 32;
+      state.logoDetected = true;
+      elements.push(`<rect x="${Math.round(state.x)}" y="${Math.round(state.y)}" width="${Math.round(width)}" height="${Math.round(height)}" fill="#ffffff" stroke="#25408f" stroke-width="2"/>`);
+      elements.push(`<text x="${Math.round(state.x + (width / 2))}" y="${Math.round(state.y + (height / 2) + 5)}" font-family="Arial, Helvetica, sans-serif" font-size="${Math.max(8, Math.round(height / 3))}" font-weight="900" text-anchor="middle" fill="#25408f">PRI Logo</text>`);
+    } else if (command.code === "FD") {
+      const data = command.params;
+      if (state.barcode?.type === "QR") {
+        const size = Math.max(42, state.barcode.magnification * 29);
+        state.qrDetected = true;
+        elements.push(`<rect x="${Math.round(state.x)}" y="${Math.round(state.y)}" width="${size}" height="${size}" fill="#ffffff" stroke="#111827" stroke-width="3"/>`);
+        elements.push(`<path d="M${state.x + 8},${state.y + 8}h18v18h-18z M${state.x + size - 28},${state.y + 8}h18v18h-18z M${state.x + 8},${state.y + size - 28}h18v18h-18z" fill="#111827"/>`);
+        elements.push(`<text x="${Math.round(state.x + (size / 2))}" y="${Math.round(state.y + size + 18)}" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="800" text-anchor="middle" fill="#111827">QR ${escapeXml(data.replace(/^LA,/, ""))}</text>`);
+      } else if (state.barcode?.type === "BARCODE") {
+        const width = Math.max(120, Math.min(360, String(data).length * 11));
+        const height = state.barcode.height;
+        elements.push(`<rect x="${Math.round(state.x)}" y="${Math.round(state.y)}" width="${width}" height="${height}" fill="#f8fafc" stroke="#111827" stroke-width="1"/>`);
+        for (let offset = 4; offset < width; offset += 8) {
+          elements.push(`<line x1="${Math.round(state.x + offset)}" y1="${Math.round(state.y + 3)}" x2="${Math.round(state.x + offset)}" y2="${Math.round(state.y + height - 3)}" stroke="#111827" stroke-width="${offset % 16 === 4 ? 2 : 1}"/>`);
+        }
+      } else {
+        const y = state.originMode === "FT" ? state.y : state.y + state.fontH;
+        appendSvgText(elements, {
+          x: state.x,
+          y,
+          text: data,
+          fontH: state.fontH,
+          fontW: state.fontW,
+          fieldBlock: state.fieldBlock,
+          reverse: state.reverse
+        });
+      }
+      state.fieldCount += 1;
+    } else if (command.code === "FS") {
+      state.fieldBlock = null;
+      state.reverse = false;
+      state.barcode = null;
+    }
+  }
+
+  const gridStep = Math.max(50, Math.round(labelWidth / 12));
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${Math.round(labelWidth)} ${Math.round(labelHeight)}" width="${Math.round(labelWidth)}" height="${Math.round(labelHeight)}" role="img" aria-label="Approximate ZPL label preview">`,
+    "<defs>",
+    `<pattern id="grid" width="${gridStep}" height="${gridStep}" patternUnits="userSpaceOnUse"><path d="M ${gridStep} 0 L 0 0 0 ${gridStep}" fill="none" stroke="#d8dee9" stroke-width="1"/></pattern>`,
+    "</defs>",
+    `<rect x="0" y="0" width="${Math.round(labelWidth)}" height="${Math.round(labelHeight)}" fill="#ffffff" stroke="#111827" stroke-width="3"/>`,
+    `<rect x="0" y="0" width="${Math.round(labelWidth)}" height="${Math.round(labelHeight)}" fill="url(#grid)" opacity="0.55"/>`,
+    ...elements,
+    "</svg>"
+  ].join("");
+
+  return {
+    mode: "approximate",
+    ok: true,
+    svg,
+    dataUrl: `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`,
+    metadata: {
+      previewMode: "approximate",
+      labelWidthDots: Math.round(labelWidth),
+      labelHeightDots: Math.round(labelHeight),
+      unsupportedZplCommands: Array.from(unsupported).sort(),
+      qrDetected: state.qrDetected,
+      logoDetected: state.logoDetected,
+      fieldCount: state.fieldCount
+    }
+  };
+}
+
+function readPngDimensions(filePath) {
+  try {
+    const buffer = fs.readFileSync(filePath);
+    if (buffer.length < 24 || buffer.toString("ascii", 1, 4) !== "PNG") return null;
+    return {
+      width: buffer.readUInt32BE(16),
+      height: buffer.readUInt32BE(20)
+    };
+  } catch {
+    return null;
+  }
+}
+
+function extractLogoDiagnostics(renderedZpl) {
+  const logoSourcePath = path.join(OFFLINE_ASSETS_DIR, "pri-logo.png");
+  const sourceDimensions = readPngDimensions(logoSourcePath);
+  const match = String(renderedZpl || "").match(/\^GFA,(\d+),(\d+),(\d+),([0-9A-Fa-f]+)/);
+  const payloadBytes = Number(match?.[1]) || 0;
+  const bytesPerRow = Number(match?.[3]) || 0;
+  const renderedWidthDots = bytesPerRow ? bytesPerRow * 8 : 0;
+  const renderedHeightDots = bytesPerRow && payloadBytes ? Math.round(payloadBytes / bytesPerRow) : 0;
+  return {
+    source: logoSourcePath,
+    sourceExists: fs.existsSync(logoSourcePath),
+    sourceWidth: sourceDimensions?.width || null,
+    sourceHeight: sourceDimensions?.height || null,
+    mode: match ? "static ^GFA" : "none",
+    payloadBytes,
+    renderedWidthDots,
+    renderedHeightDots,
+    qualityNote: match && renderedWidthDots < 128
+      ? "Logo is a small 1-bit ZPL graphic; use a wider converted asset or keep it physically small to avoid pixelation."
+      : "Logo source is high resolution; physical quality still depends on final dot size and thresholding."
+  };
+}
+
+function extractQrMetadata(renderedZpl, sourceTemplate) {
+  const renderedMatch = String(renderedZpl || "").match(/\^BQN,([^^]+)\^FDLA,([^^]+)\^FS/);
+  const sourceMatch = String(sourceTemplate || "").match(/\^BQN,([^^]+)\^FDLA,([^^]+)\^FS/);
+  if (!renderedMatch && !sourceMatch) return null;
+
+  return {
+    command: renderedMatch ? `^BQN,${renderedMatch[1]}` : `^BQN,${sourceMatch[1]}`,
+    payload: renderedMatch ? renderedMatch[2] : null,
+    payloadTemplate: sourceMatch ? sourceMatch[2] : null,
+    lotNumberOnly: sourceMatch ? sourceMatch[2] === "{{lotNumber}}" : false
+  };
+}
+
+function extractTemplateRenderMetadata({ renderedZpl, sourceTemplate, templateName, profile, fitDebug, previewInfo }) {
+  const graphicCommands = String(renderedZpl || "").match(/\^GFA|~DG|\^XG/g) || [];
+  const previewMetadata = previewInfo?.metadata || {};
+  return {
+    template: templateName,
+    payloadBytes: Buffer.byteLength(String(renderedZpl || ""), "utf8"),
+    qr: extractQrMetadata(renderedZpl, sourceTemplate),
+    rfidCommandPresent: /\^RFW,/.test(String(renderedZpl || "")),
+    rfidCommands: String(renderedZpl || "").match(/\^RFW,[^^]+\^FD[^^]*\^FS/g) || [],
+    logoCommandPresent: /\^GFA/.test(String(renderedZpl || "")),
+    bitmapGraphicCommandPresent: /~DG|\^XG/.test(String(renderedZpl || "")),
+    graphicCommandCount: graphicCommands.length,
+    fitDebug,
+    logoMode: /\^GFA/.test(String(renderedZpl || "")) ? "static logo" : "none",
+    logoDiagnostics: extractLogoDiagnostics(renderedZpl),
+    previewMode: previewMetadata.previewMode || previewInfo?.mode || "unavailable",
+    labelWidthDots: previewMetadata.labelWidthDots || profile?.labelWidthDots || null,
+    labelHeightDots: previewMetadata.labelHeightDots || profile?.labelHeightDots || null,
+    unsupportedZplCommands: previewMetadata.unsupportedZplCommands || [],
+    qrDetected: previewMetadata.qrDetected ?? /\^BQN,/.test(String(renderedZpl || "")),
+    logoDetected: previewMetadata.logoDetected ?? /\^GFA/.test(String(renderedZpl || "")),
+    fieldCount: previewMetadata.fieldCount || 0,
+    profile
+  };
+}
+
+async function renderOptionalZplPreviewImage(renderedZpl, profile) {
+  const approximatePreview = buildApproximateZplPreview(renderedZpl, profile);
+  const rendererUrl = trimString(process.env.ZPL_PREVIEW_RENDERER_URL);
+  if (!rendererUrl) {
+    return {
+      configured: false,
+      ok: true,
+      mode: "approximate",
+      message: "Using built-in approximate SVG preview because ZPL_PREVIEW_RENDERER_URL is not configured.",
+      data: { imageUrl: approximatePreview.dataUrl, svg: approximatePreview.svg },
+      metadata: approximatePreview.metadata
+    };
+  }
+
+  try {
+    const response = await axios.post(
+      rendererUrl,
+      {
+        zpl: renderedZpl,
+        labelWidthDots: profile?.labelWidthDots || null,
+        labelHeightDots: profile?.labelHeightDots || null,
+        dpi: profile?.dpi || null
+      },
+      { timeout: 5000 }
+    );
+    return {
+      configured: true,
+      ok: true,
+      mode: "external",
+      data: response.data,
+      metadata: {
+        ...approximatePreview.metadata,
+        previewMode: "external"
+      }
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      ok: true,
+      mode: "approximate",
+      message: `External renderer failed; using built-in approximate preview. ${formatErrorDetail(error)}`,
+      data: { imageUrl: approximatePreview.dataUrl, svg: approximatePreview.svg },
+      metadata: approximatePreview.metadata,
+      externalError: formatErrorDetail(error)
+    };
+  }
+}
+
+async function buildTemplatePreviewPayload(input = {}) {
+  const selected = normalizeTemplateLabTemplateName(input.template || input.templateName);
+  const profileKey = trimString(input.profileKey || input.profile || selected.definition.defaultProfileKey).toUpperCase();
+  const inlineOverrides = buildProfileOverridesFromInput(input);
+  const profile = buildEffectiveTemplateLabProfile(profileKey, selected.definition.defaultProfileKey, inlineOverrides);
+  const data = buildTemplateLabData(input, selected.definition);
+  const sourceTemplateText = loadZplTemplate(selected.templatePath);
+  const templateText = applyFieldPositionOverridesToTemplateSource(sourceTemplateText, profile?.fieldPositionOverrides || {});
+  const renderOptions = { fieldFitDefinitions: profile?.fieldFitDefinitions || {} };
+  const renderedResult = selected.definition.requiresRfid
+    ? renderZplTemplateWithMetadata(templateText, data, renderOptions)
+    : renderZplTemplateWithoutRfidWithMetadata(templateText, data, renderOptions);
+  const renderedZpl = applyTemplateLabRenderedOverrides(renderedResult.rendered, profile);
+  const imagePreview = await renderOptionalZplPreviewImage(renderedZpl, profile);
+  const metadata = extractTemplateRenderMetadata({
+    renderedZpl,
+    sourceTemplate: templateText,
+    templateName: selected.name,
+    profile,
+    fitDebug: renderedResult.fitDebug,
+    previewInfo: imagePreview
+  });
+
+  return {
+    ok: true,
+    template: selected.name,
+    templatePath: selected.templatePath,
+    requiresRfid: selected.definition.requiresRfid,
+    profileKey: profile?.key || null,
+    sampleData: data,
+    renderedZpl,
+    metadata,
+    profileOverrides: inlineOverrides,
+    savedProfileOverrides: profile?.savedOverrides || {},
+    profileConfigPath: ZPL_TEMPLATE_LAB_PROFILE_PATH,
+    imagePreview
+  };
+}
+
+function setTemplateTestSendFunction(fn) {
+  templateTestSendFunctionForTests = typeof fn === "function" ? fn : null;
+}
+
+function resetTemplateTestSendFunction() {
+  templateTestSendFunctionForTests = null;
+}
+
+function saveTemplateLabProfileOverrides(body = {}) {
+  const profileKey = trimString(body.profileKey || body.profile).toUpperCase();
+  const baseProfile = getStationProfile(profileKey);
+  if (!baseProfile) {
+    throw httpError(400, "UNSUPPORTED_TEMPLATE_LAB_PROFILE", "Template Lab can only save overrides for approved station/template profiles.", {
+      profileKey,
+      supportedProfiles: listStationProfiles().map((profile) => profile.key)
+    });
+  }
+
+  const explicitOverrides = parseJsonObjectField(body.overrides ?? body.profileOverrides, "overrides");
+  const flatOverrides = buildProfileOverridesFromInput({ ...body, profileOverrides: undefined });
+  const overrides = deepMergePlainObjects(explicitOverrides, flatOverrides);
+  const config = readTemplateLabProfileConfig();
+  config.profiles = isPlainObject(config.profiles) ? config.profiles : {};
+  config.profiles[profileKey] = overrides;
+  config.updatedAt = isoNow();
+  writeTemplateLabProfileConfig(config);
+
+  logInfo("template_lab_profile_saved", {
+    profileKey,
+    profilePath: ZPL_TEMPLATE_LAB_PROFILE_PATH,
+    overrideKeys: Object.keys(overrides)
+  });
+
+  return {
+    ok: true,
+    profileKey,
+    profileConfigPath: ZPL_TEMPLATE_LAB_PROFILE_PATH,
+    overrides,
+    profile: buildEffectiveTemplateLabProfile(profileKey, profileKey, {})
+  };
+}
+
+function resolvePrinterKeyForResume(body = {}) {
+  const explicit = trimString(body.printerKey);
+  if (explicit) return explicit;
+
+  const station = normalizeStation(body.station);
+  if (!station) {
+    throw httpError(400, "VALIDATION_ERROR", "printerKey or station is required.");
+  }
+
+  const zpl = resolveZplPrinterAndTemplate({ station, family: "RAW" });
+  return getZplQueueKey(zpl);
+}
+
+function resumeZplQueue(body = {}) {
+  const printerKey = resolvePrinterKeyForResume(body);
+  const state = getOrCreateZplWorkerState(printerKey);
+  const now = isoNow();
+  let reviewedCount = 0;
+
+  for (const item of listZplQueueItems()) {
+    if (item.printerKey === printerKey && item.status === "unknown_after_send" && !item.operatorReviewedAt) {
+      writeZplQueueItem({
+        ...item,
+        operatorReviewedAt: now,
+        operatorReviewedBy: trimString(body.operator || body.adminName || "local-operator"),
+        operatorReviewNote: trimString(body.note || body.reason || "")
+      });
+      reviewedCount += 1;
+    }
+  }
+
+  state.paused = false;
+  state.lastError = null;
+  logInfo("zpl_queue_worker_resumed", { printerKey, reviewedCount }, `[PrintSvc] Direct ZPL worker resumed printerKey=${printerKey}`);
+  setImmediate(() => startZplQueueWorkerForPrinter(printerKey));
+  return { ok: true, printerKey, reviewedCount, message: "Direct-ZPL printer queue resumed." };
+}
+
+function findZplQueueItemForRetry(body = {}) {
+  const itemId = trimString(body.itemId);
+  const items = listZplQueueItems();
+
+  if (itemId) {
+    const item = items.find((candidate) => candidate.itemId === itemId);
+    if (!item) throw httpError(404, "ZPL_QUEUE_ITEM_NOT_FOUND", `No ZPL queue item found for itemId='${itemId}'.`);
+    return item;
+  }
+
+  const station = normalizeStation(body.station);
+  const lotNumber = trimString(body.lotNumber);
+  const boxRaw = body.box ?? body.boxNumber;
+  const box = Number(boxRaw);
+
+  if (!station || !lotNumber || !Number.isInteger(box)) {
+    throw httpError(400, "VALIDATION_ERROR", "itemId or station + lotNumber + box is required.");
+  }
+
+  const matches = items.filter((item) =>
+    String(item.station || "").toUpperCase() === station &&
+    String(item.lotNumber || "").trim().toUpperCase() === lotNumber.toUpperCase() &&
+    Number(item.box) === box
+  );
+
+  if (matches.length === 0) {
+    throw httpError(404, "ZPL_QUEUE_ITEM_NOT_FOUND", `No ZPL queue item found for station=${station} lot=${lotNumber} box=${box}.`);
+  }
+
+  if (matches.length > 1) {
+    const failedMatches = matches.filter((item) => item.status === "failed_before_send");
+    if (failedMatches.length === 1) return failedMatches[0];
+    const error = httpError(409, "ZPL_QUEUE_RETRY_AMBIGUOUS", "Multiple ZPL queue items match. Retry by itemId.");
+    error.details = { itemIds: matches.map((item) => item.itemId) };
+    throw error;
+  }
+
+  return matches[0];
+}
+
+function retryFailedZplQueueItem(body = {}) {
+  recoverStaleSendingItems({ reason: "retry failed stale sending recovery" });
+  const item = findZplQueueItemForRetry(body);
+
+  if (item.status === "unknown_after_send") {
+    const error = httpError(409, "ZPL_RETRY_NOT_ALLOWED", "unknown_after_send items may have printed and cannot be retried automatically.");
+    error.details = { item: summarizeZplQueueItem(item), safeToRetry: false };
+    throw error;
+  }
+
+  if (!isQueueItemSafeToRetry(item)) {
+    const error = httpError(409, "ZPL_RETRY_NOT_ALLOWED", "Only failed_before_send queue items with writeStarted=false and bytesSent=0 can be retried.");
+    error.details = { item: summarizeZplQueueItem(item), safeToRetry: false };
+    throw error;
+  }
+
+  const next = writeZplQueueItem({
+    ...item,
+    status: "queued",
+    queueSequence: nextZplQueueSequence(),
+    retryRequestedAt: isoNow(),
+    retryRequestedBy: trimString(body.operator || body.adminName || "local-operator"),
+    retryReason: trimString(body.note || body.reason || ""),
+    requeuedFromStatus: item.status,
+    lastError: null
+  });
+
+  logInfo(
+    "zpl_queue_failed_item_requeued",
+    { station: next.station, lotNumber: next.lotNumber, box: next.box, rfid: next.rfid, printerIp: next.printerIp, printerPort: next.printerPort, itemId: next.itemId, jobId: next.jobId },
+    `[PrintSvc] Direct ZPL failed_before_send item requeued itemId=${next.itemId} station=${next.station} lot=${next.lotNumber} box=${next.box}`
+  );
+
+  setImmediate(() => startZplQueueWorkerForPrinter(next.printerKey));
+  return {
+    ok: true,
+    queued: true,
+    itemId: next.itemId,
+    jobId: next.jobId,
+    station: next.station,
+    lotNumber: next.lotNumber,
+    box: next.box,
+    rfid: next.rfid,
+    printerKey: next.printerKey,
+    message: "Direct-ZPL failed_before_send item requeued."
+  };
+}
+
+function setDirectZplQueueSendFunction(fn) {
+  directZplQueueSendFunction = typeof fn === "function" ? fn : sendDirectZplQueueItem;
+}
+
+function resetDirectZplQueueSendFunction() {
+  directZplQueueSendFunction = sendDirectZplQueueItem;
+}
+
+function setZplSocketFactoryForTests(fn) {
+  zplSocketFactoryForTests = typeof fn === "function" ? fn : null;
+}
+
+function resetZplSocketFactoryForTests() {
+  zplSocketFactoryForTests = null;
+}
+
+function clearZplWorkerStateForTests() {
+  for (const printerKey of Array.from(zplPersistentSockets.keys())) {
+    closeZplPersistentSocket(printerKey, "test_reset");
+  }
+  zplQueueWorkers.clear();
+  for (const timer of zplStaleSendingRecoveryTimers.values()) clearTimeout(timer);
+  zplStaleSendingRecoveryTimers.clear();
+  zplPrinterLastSendStartedAt.clear();
+  zplSocketFactoryForTests = null;
+}
+
+function buildZplRenderDataFromNamed({ lotNumber, box, rfid, namedDataSources }) {
+  const named = namedDataSources || {};
+  const resolvedRfid = String(rfid || named.RFID || named.rfid || `${lotNumber}-B${pad2(box)}`);
+  const sampleLabel = named.sampleLabel || named.samplelabel || named.firstbox || named.box || named.Box || box;
+  return {
+    lotNumber,
+    boxNumber: String(box),
+    rfid: resolvedRfid,
+    pounds: named.pounds,
+    materialType: named.type,
+    color: named.color,
+    po: named.po,
+    productCode: named.prodnum || named.productCode || named.productcode,
+    productName: named.prodname || named.productName || named.product,
+    productDescription: named.proddesc || named.prodname || named.product,
+    tolling: named.tolling,
+    erp: named.erp,
+    qrData: named.qrData || resolvedRfid,
+    machine: named.machine,
+    company: named.company,
+    labelType: named.labeltype || named.labelType,
+    sampleType: named.sampletype || named.sampleType,
+    sampleTime: named.sampleTime || named.sampletime || sampleLabel,
+    sampleLabel,
+    frequencyCheck: named.frequencyCheck || named.frequencycheck || named.pounds || sampleLabel,
+    printedDate: named.printedDate || named.printeddate || named.date || new Date().toLocaleDateString("en-US")
+  };
+}
+
+function renderDirectZplDryRunLabel({ zpl, station, lotNumber, box, rfid, namedDataSources, requiresRfidEncoding = true }) {
+  try {
+    const data = buildZplRenderDataFromNamed({ lotNumber, box, rfid, namedDataSources });
+    const renderedZpl = requiresRfidEncoding === false
+      ? renderZplTemplateFileWithoutRfid(zpl.templatePath, data)
+      : renderZplTemplateFile(zpl.templatePath, data);
+
+    const summary = {
+      station,
+      lotNumber,
+      box,
+      rfid,
+      rfidHex: requiresRfidEncoding === false ? null : rfidTextToHex(rfid),
+      printerIp: zpl.printerIp,
+      printerPort: zpl.port,
+      templatePath: zpl.templatePath,
+      renderedBytes: Buffer.byteLength(renderedZpl, "utf8")
+    };
+
+    if (isDebugZplEnabled()) {
+      logInfo("zpl_rendered_payload", { ...summary, zpl: renderedZpl });
+    }
+
+    return summary;
+  } catch (error) {
+    if (error.code === "INVALID_RFID") {
+      logError(
+        "print_validation_error",
+        { station, lotNumber, box, invalidRfid: rfid, reason: error.message },
+        `[PrintSvc] Direct ZPL validation failed station=${station} lot=${lotNumber} box=${box} invalid rfid="${rfid}": ${error.message}`
+      );
+    }
+
+    throw error;
+  }
+}
+
+async function sendRenderedZplPayload({
+  zpl,
+  renderedZpl,
+  station,
+  lotNumber,
+  box,
+  sendZplOverTcpFn = null,
+  queueDepth = null,
+  item = null
+}) {
+  const socketMode = sendZplOverTcpFn ? "per_label" : getZplSocketMode();
+  const printerKey = item?.printerKey || getZplQueueKey(zpl);
+  logZplSendTiming({ printerKey, station, lotNumber, box, socketMode, queueDepth });
+
+  if (socketMode === "persistent") {
+    return sendZplOverPersistentSocket({
+      printerKey,
+      printerIp: zpl.printerIp,
+      port: zpl.port,
+      zpl: renderedZpl,
+      timeoutMs: getZplTcpTimeoutMs(),
+      queueDepth
+    });
+  }
+
+  const sendFn = sendZplOverTcpFn || sendZplOverTcp;
+  return sendFn({
+    printerIp: zpl.printerIp,
+    port: zpl.port,
+    zpl: renderedZpl,
+    timeoutMs: getZplTcpTimeoutMs()
+  });
+}
+
+async function sendDirectZplLabel({ zpl, station, lotNumber, box, rfid, namedDataSources, sendZplOverTcpFn = null, queueDepth = null, item = null }) {
+  const startedAt = Date.now();
+  const settings = getZplTransportSettings();
+  const maxAttempts = settings.connectRetryCount + 1;
+  let renderedZpl;
+
+  try {
+    renderedZpl = renderZplTemplateFile(
+      zpl.templatePath,
+      buildZplRenderDataFromNamed({ lotNumber, box, rfid, namedDataSources })
+    );
+  } catch (error) {
+    if (error.code === "INVALID_RFID") {
+      logError(
+        "print_validation_error",
+        { station, lotNumber, box, invalidRfid: rfid, reason: error.message },
+        `[PrintSvc] Direct ZPL validation failed station=${station} lot=${lotNumber} box=${box} invalid rfid="${rfid}": ${error.message}`
+      );
+    } else {
+      logError(
+        "zpl_print_error",
+        { station, lotNumber, box, rfid, printerIp: zpl.printerIp, port: zpl.port, attemptNumber: 0, maxAttempts, durationMs: Date.now() - startedAt, code: error.code || null, message: error.message },
+        `[PrintSvc] Direct ZPL render failed box=${box} rfid=${rfid} printer=${zpl.printerIp}:${zpl.port}: ${error.message}`
+      );
+    }
+
+    throw error;
+  }
+
+  if (isDebugZplEnabled()) {
+    logInfo("zpl_rendered_payload", { station, lotNumber, box, rfid, printerIp: zpl.printerIp, templatePath: zpl.templatePath, zpl: renderedZpl });
+  }
+
+  let lastError = null;
+
+  for (let attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber++) {
+    const attemptStartedAt = Date.now();
+    logEvent(
+      "zpl_print_attempt",
+      { station, lotNumber, box, rfid, printerIp: zpl.printerIp, port: zpl.port, templatePath: zpl.templatePath, attemptNumber, maxAttempts },
+      `[PrintSvc] -> Direct ZPL PRINT box=${box} rfid=${rfid} attempt=${attemptNumber}/${maxAttempts} printer=${zpl.printerIp}:${zpl.port} template="${zpl.templatePath}"`
+    );
+
+    try {
+      const sendResult = await sendRenderedZplPayload({
+        zpl,
+        renderedZpl,
+        station,
+        lotNumber,
+        box,
+        sendZplOverTcpFn,
+        queueDepth,
+        item
+      });
+
+      const durationMs = sendResult.durationMs ?? (Date.now() - attemptStartedAt);
+      const totalDurationMs = Date.now() - startedAt;
+      logInfo(
+        "zpl_print_success",
+        {
+          station,
+          lotNumber,
+          box,
+          rfid,
+          printerIp: zpl.printerIp,
+          port: zpl.port,
+          durationMs,
+          totalDurationMs,
+          attemptNumber,
+          bytesSent: sendResult.bytesSent,
+          socketClosed: sendResult.socketClosed === true,
+          socketMode: sendResult.socketMode || "per_label",
+          sendAccepted: true,
+          physicalPrintConfirmed: false,
+          note: "TCP send accepted; physical RFID print must be verified by operator/scanner."
+        },
+        `[PrintSvc] <- Direct ZPL TCP send accepted box=${box} rfid=${rfid} attempt=${attemptNumber}/${maxAttempts} printer=${zpl.printerIp}:${zpl.port} durationMs=${durationMs} bytes=${sendResult.bytesSent}; physical print not confirmed`
+      );
+
+      return {
+        box,
+        rfid,
+        status: "tcp_send_accepted",
+        printerIp: zpl.printerIp,
+        printerPort: zpl.port,
+        durationMs,
+        totalDurationMs,
+        attemptNumber,
+        bytesSent: sendResult.bytesSent,
+        socketClosed: sendResult.socketClosed === true,
+        socketMode: sendResult.socketMode || "per_label",
+        sendAccepted: true,
+        physicalPrintConfirmed: false
+      };
+    } catch (error) {
+      lastError = error;
+      const durationMs = error.details?.durationMs ?? (Date.now() - attemptStartedAt);
+      const totalDurationMs = Date.now() - startedAt;
+      if (zplSendMayHaveReachedPrinter(error)) {
+        const unknownError = toZplSendUnknownError(error, { box });
+        logError(
+          "zpl_send_unknown",
+          {
+            station,
+            lotNumber,
+            box,
+            rfid,
+            printerIp: zpl.printerIp,
+            port: zpl.port,
+            durationMs,
+            totalDurationMs,
+            attemptNumber,
+            maxAttempts,
+            code: unknownError.code,
+            originalCode: error.code || null,
+            message: unknownError.message,
+            retryable: false,
+            operatorAction: unknownError.operatorAction
+          },
+          `[PrintSvc] Direct ZPL send unknown box=${box} rfid=${rfid} attempt=${attemptNumber}/${maxAttempts} printer=${zpl.printerIp}:${zpl.port}: ${unknownError.message}`
+        );
+        throw unknownError;
+      }
+
+      const retryable = isRetryableZplTcpError(error);
+      const code = error.code || error.details?.code || "ZPL_TCP_ERROR";
+
+      logError(
+        "zpl_print_error",
+        {
+          station,
+          lotNumber,
+          box,
+          rfid,
+          printerIp: zpl.printerIp,
+          port: zpl.port,
+          durationMs,
+          totalDurationMs,
+          attemptNumber,
+          maxAttempts,
+          code,
+          message: error.message,
+          retryable
+        },
+        `[PrintSvc] Direct ZPL failed box=${box} rfid=${rfid} attempt=${attemptNumber}/${maxAttempts} printer=${zpl.printerIp}:${zpl.port}: ${error.message}`
+      );
+
+      if (!retryable || attemptNumber >= maxAttempts) {
+        error.retryable = retryable;
+        throw error;
+      }
+
+      await sleep(getZplRetryDelayMs());
+    }
+  }
+
+  throw lastError;
+}
+
+async function sendDirectZplNonRfidLabel({ zpl, station, lotNumber, box, rfid, namedDataSources, sendZplOverTcpFn = null, queueDepth = null, item = null }) {
+  const startedAt = Date.now();
+  const settings = getZplTransportSettings();
+  const maxAttempts = settings.connectRetryCount + 1;
+  let renderedZpl;
+
+  try {
+    renderedZpl = renderZplTemplateFileWithoutRfid(
+      zpl.templatePath,
+      buildZplRenderDataFromNamed({ lotNumber, box, rfid, namedDataSources })
+    );
+  } catch (error) {
+    logError(
+      "zpl_print_error",
+      { station, lotNumber, box, rfid, printerIp: zpl.printerIp, port: zpl.port, attemptNumber: 0, maxAttempts, durationMs: Date.now() - startedAt, code: error.code || null, message: error.message },
+      `[PrintSvc] Direct ZPL render failed box=${box} rfid=${rfid} printer=${zpl.printerIp}:${zpl.port}: ${error.message}`
+    );
+    throw error;
+  }
+
+  if (isDebugZplEnabled()) {
+    logInfo("zpl_rendered_payload", { station, lotNumber, box, rfid, printerIp: zpl.printerIp, templatePath: zpl.templatePath, zpl: renderedZpl });
+  }
+
+  let lastError = null;
+
+  for (let attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber++) {
+    const attemptStartedAt = Date.now();
+    logEvent(
+      "zpl_print_attempt",
+      { station, lotNumber, box, rfid, printerIp: zpl.printerIp, port: zpl.port, templatePath: zpl.templatePath, attemptNumber, maxAttempts, requiresRfidEncoding: false },
+      `[PrintSvc] -> Direct ZPL SAMPLE PRINT box=${box} attempt=${attemptNumber}/${maxAttempts} printer=${zpl.printerIp}:${zpl.port} template="${zpl.templatePath}"`
+    );
+
+    try {
+      const sendResult = await sendRenderedZplPayload({
+        zpl,
+        renderedZpl,
+        station,
+        lotNumber,
+        box,
+        sendZplOverTcpFn,
+        queueDepth,
+        item
+      });
+
+      const durationMs = sendResult.durationMs ?? (Date.now() - attemptStartedAt);
+      const totalDurationMs = Date.now() - startedAt;
+      logInfo(
+        "zpl_print_success",
+        {
+          station,
+          lotNumber,
+          box,
+          rfid,
+          printerIp: zpl.printerIp,
+          port: zpl.port,
+          durationMs,
+          totalDurationMs,
+          attemptNumber,
+          bytesSent: sendResult.bytesSent,
+          socketClosed: sendResult.socketClosed === true,
+          socketMode: sendResult.socketMode || "per_label",
+          sendAccepted: true,
+          physicalPrintConfirmed: false,
+          requiresRfidEncoding: false,
+          note: "TCP send accepted; physical sample label print must be verified by operator."
+        },
+        `[PrintSvc] <- Direct ZPL TCP send accepted sample box=${box} attempt=${attemptNumber}/${maxAttempts} printer=${zpl.printerIp}:${zpl.port} durationMs=${durationMs} bytes=${sendResult.bytesSent}; physical print not confirmed`
+      );
+
+      return {
+        box,
+        rfid,
+        status: "tcp_send_accepted",
+        printerIp: zpl.printerIp,
+        printerPort: zpl.port,
+        durationMs,
+        totalDurationMs,
+        attemptNumber,
+        bytesSent: sendResult.bytesSent,
+        socketClosed: sendResult.socketClosed === true,
+        socketMode: sendResult.socketMode || "per_label",
+        sendAccepted: true,
+        physicalPrintConfirmed: false,
+        requiresRfidEncoding: false
+      };
+    } catch (error) {
+      lastError = error;
+      const durationMs = error.details?.durationMs ?? (Date.now() - attemptStartedAt);
+      const totalDurationMs = Date.now() - startedAt;
+      if (zplSendMayHaveReachedPrinter(error)) {
+        const unknownError = toZplSendUnknownError(error, { box });
+        logError(
+          "zpl_send_unknown",
+          {
+            station,
+            lotNumber,
+            box,
+            rfid,
+            printerIp: zpl.printerIp,
+            port: zpl.port,
+            durationMs,
+            totalDurationMs,
+            attemptNumber,
+            maxAttempts,
+            code: unknownError.code,
+            originalCode: error.code || null,
+            message: unknownError.message,
+            retryable: false,
+            operatorAction: unknownError.operatorAction,
+            requiresRfidEncoding: false
+          },
+          `[PrintSvc] Direct ZPL sample send unknown box=${box} attempt=${attemptNumber}/${maxAttempts} printer=${zpl.printerIp}:${zpl.port}: ${unknownError.message}`
+        );
+        throw unknownError;
+      }
+
+      const retryable = isRetryableZplTcpError(error);
+      const code = error.code || error.details?.code || "ZPL_TCP_ERROR";
+
+      logError(
+        "zpl_print_error",
+        {
+          station,
+          lotNumber,
+          box,
+          rfid,
+          printerIp: zpl.printerIp,
+          port: zpl.port,
+          durationMs,
+          totalDurationMs,
+          attemptNumber,
+          maxAttempts,
+          code,
+          message: error.message,
+          retryable,
+          requiresRfidEncoding: false
+        },
+        `[PrintSvc] Direct ZPL sample failed box=${box} attempt=${attemptNumber}/${maxAttempts} printer=${zpl.printerIp}:${zpl.port}: ${error.message}`
+      );
+
+      if (!retryable || attemptNumber >= maxAttempts) {
+        error.retryable = retryable;
+        throw error;
+      }
+
+      await sleep(getZplRetryDelayMs());
+    }
+  }
+
+  throw lastError;
+}
+
+async function sendDirectZplQueueItem(args) {
+  if (args?.requiresRfidEncoding === false || args?.item?.requiresRfidEncoding === false) {
+    return sendDirectZplNonRfidLabel(args);
+  }
+  return sendDirectZplLabel(args);
 }
 
 /**
@@ -1703,7 +5622,7 @@ function validateOfflinePrintPayload(body) {
     throw httpError(400, "VALIDATION_ERROR", "confirmationAccepted must be true.");
   }
 
-  const resolved = resolvePrinterAndTemplateForFamily({
+  const resolved = resolveRfidPrintTargetForFamily({
     station,
     lotNumber,
     family: requestedFamily
@@ -1716,6 +5635,8 @@ function validateOfflinePrintPayload(body) {
     family: resolved.family,
     printer: resolved.printer,
     template: resolved.template,
+    printEngine: resolved.printEngine,
+    zpl: resolved.zpl,
     firstBox,
     lastBox,
     requestedCount,
@@ -1762,6 +5683,15 @@ function getAuditFamily(validated, body) {
   }
 }
 
+function getAuditPrintEngine(validated) {
+  if (validated?.printEngine) return validated.printEngine;
+  try {
+    return getConfiguredPrintEngine();
+  } catch {
+    return String(process.env.PRINT_ENGINE || "bartender").trim().toLowerCase();
+  }
+}
+
 function buildOfflinePrintAuditDetails(validated, body, overrides = {}) {
   return {
     operator: validated?.operator || trimString(body?.operator),
@@ -1770,6 +5700,9 @@ function buildOfflinePrintAuditDetails(validated, body, overrides = {}) {
     family: getAuditFamily(validated, body),
     printer: validated?.printer || "",
     template: validated?.template || "",
+    printEngine: getAuditPrintEngine(validated),
+    zplPrinterIp: validated?.zpl?.printerIp || "",
+    zplTemplatePath: validated?.zpl?.templatePath || "",
     lotNumber: validated?.lotNumber || trimString(body?.lotNumber),
     firstBox: validated?.firstBox ?? parseIntegerField(body?.firstBox),
     lastBox: validated?.lastBox ?? parseIntegerField(body?.lastBox),
@@ -1808,6 +5741,16 @@ app.get("/offline", (req, res) => {
 app.get("/offline/admin", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   return res.sendFile(path.join(OFFLINE_PUBLIC_DIR, "admin.html"));
+});
+
+app.get("/offline/print-health", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  return res.sendFile(path.join(OFFLINE_PUBLIC_DIR, "print-health.html"));
+});
+
+app.get("/offline/template-lab", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  return res.sendFile(path.join(OFFLINE_PUBLIC_DIR, "template-lab.html"));
 });
 
 app.use("/offline", express.static(OFFLINE_PUBLIC_DIR, {
@@ -1934,7 +5877,7 @@ app.post("/api/offline/print-labels", async (req, res) => {
     }
 
     validated = validateOfflinePrintPayload(req.body || {});
-    lockKey = validated.dryRun ? null : `offline|${validated.station}|${validated.lotNumber}`;
+    lockKey = validated.dryRun || validated.printEngine === "zpl" ? null : `offline|${validated.station}|${validated.lotNumber}`;
 
     if (lockKey) {
       const existing = activePrintJobs.get(lockKey);
@@ -1955,9 +5898,25 @@ app.post("/api/offline/print-labels", async (req, res) => {
     const preview = offlinePreview(validated);
 
     if (validated.dryRun) {
+      const zplPreview = validated.printEngine === "zpl" ? [] : null;
+      if (validated.printEngine === "zpl") {
+        for (let box = validated.firstBox; box <= validated.lastBox; box++) {
+          const namedDataSources = buildOfflineNamedDataSources(req.body || {}, validated.lotNumber, box);
+          zplPreview.push(renderDirectZplDryRunLabel({
+            zpl: validated.zpl,
+            station: validated.station,
+            lotNumber: validated.lotNumber,
+            box,
+            rfid: namedDataSources.RFID,
+            namedDataSources
+          }));
+        }
+      }
+
       writeOfflineAudit("offline_print_dry_run", req, buildOfflinePrintAuditDetails(validated, req.body, {
         printedCount: 0,
         preview,
+        zplPreview,
         ok: true
       }));
 
@@ -1969,22 +5928,139 @@ app.post("/api/offline/print-labels", async (req, res) => {
         family: validated.family,
         printer: validated.printer,
         template: validated.template,
+        printEngine: validated.printEngine,
+        zplPrinterIp: validated.zpl?.printerIp || null,
+        zplPrinterPort: validated.zpl?.port || null,
+        zplTemplatePath: validated.zpl?.templatePath || null,
         lotNumber: validated.lotNumber,
         firstBox: validated.firstBox,
         lastBox: validated.lastBox,
         requestedCount: validated.requestedCount,
-        preview
+        preview,
+        zplPreview
       });
+    }
+
+    if (validated.printEngine === "zpl") {
+      const jobId = makeZplJobId();
+      const items = [];
+      const requestedBoxes = [];
+
+      for (let box = validated.firstBox; box <= validated.lastBox; box++) {
+        const namedDataSources = buildOfflineNamedDataSources(req.body || {}, validated.lotNumber, box);
+        const rfid = namedDataSources.RFID;
+        requestedBoxes.push(box);
+        items.push(buildZplQueueItem({
+          jobId,
+          station: validated.station,
+          family: validated.family,
+          lotNumber: validated.lotNumber,
+          box,
+          rfid,
+          zpl: validated.zpl,
+          namedDataSources
+        }));
+      }
+
+      const { queuedItems, skippedDuplicates } = enqueueNormalDirectZplQueueItems(items);
+      writeOfflineAudit("offline_print_queued", req, buildOfflinePrintAuditDetails(validated, req.body, {
+        printedCount: 0,
+        queuedCount: queuedItems.length,
+        skippedDuplicateCount: skippedDuplicates.length,
+        jobId,
+        itemIds: queuedItems.map((item) => item.itemId),
+        ok: true
+      }));
+
+      return res.json(buildDirectZplQueueResponse({
+        jobId,
+        station: validated.station,
+        requestedFamily: validated.requestedFamily,
+        family: validated.family,
+        lotNumber: validated.lotNumber,
+        requestedBoxes,
+        firstBox: validated.firstBox,
+        lastBox: validated.lastBox,
+        requestedCount: requestedBoxes.length,
+        printerIp: validated.zpl.printerIp,
+        printerPort: validated.zpl.port,
+        templatePath: validated.zpl.templatePath,
+        queuedItems,
+        skippedDuplicates
+      }));
     }
 
     const results = [];
     let printedCount = 0;
     const printJobSpacingMs = getSafePrintJobSpacingMs();
+    const zplLabelSpacingMs = getZplLabelSpacingMs();
+    const queueKey = validated.printEngine === "zpl" ? getZplQueueKey(validated.zpl) : validated.printer;
 
-    await enqueuePrinterWork(validated.printer, async () => {
-      for (let box = validated.firstBox; box <= validated.lastBox; box++) {
-        const namedDataSources = buildOfflineNamedDataSources(req.body || {}, validated.lotNumber, box);
-        const rfid = namedDataSources.RFID;
+    await enqueuePrinterWork(queueKey, async () => {
+      if (validated.printEngine === "zpl") {
+        const requestScope = getRequestScopeFromCount(validated.requestedCount);
+        logInfo(
+          "zpl_queue_start",
+          { station: validated.station, lotNumber: validated.lotNumber, printerIp: validated.zpl.printerIp, printerPort: validated.zpl.port, firstBox: validated.firstBox, lastBox: validated.lastBox, requestedCount: validated.requestedCount, requestScope, labelSpacingMs: zplLabelSpacingMs },
+          `[OfflinePrint] Direct ZPL queue start scope=${requestScope} station=${validated.station} lot=${validated.lotNumber} printer=${validated.zpl.printerIp}:${validated.zpl.port}`
+        );
+      }
+
+      try {
+        for (let box = validated.firstBox; box <= validated.lastBox; box++) {
+          const namedDataSources = buildOfflineNamedDataSources(req.body || {}, validated.lotNumber, box);
+          const rfid = namedDataSources.RFID;
+
+          if (validated.printEngine === "zpl") {
+            try {
+              assertNoRecentZplDuplicate({
+                station: validated.station,
+                lotNumber: validated.lotNumber,
+                box,
+                rfid
+              });
+
+              const result = await sendDirectZplLabel({
+                zpl: validated.zpl,
+                station: validated.station,
+                lotNumber: validated.lotNumber,
+                box,
+                rfid,
+                namedDataSources
+              });
+
+              printedCount += 1;
+              results.push(result);
+              markRecentZplSendAccepted({
+                station: validated.station,
+                lotNumber: validated.lotNumber,
+                box,
+                rfid
+              });
+
+              writeOfflineAudit("offline_print_label", req, buildOfflinePrintAuditDetails(validated, req.body, {
+                box,
+                rfid,
+                printedCount: 1,
+                namedDataSources,
+                ok: true
+              }));
+            } catch (error) {
+              writeOfflineAudit("offline_print_label", req, buildOfflinePrintAuditDetails(validated, req.body, {
+                box,
+                rfid,
+                printedCount: 0,
+                namedDataSources,
+                ok: false,
+                error: formatErrorDetail(error)
+              }));
+              decorateZplPartialFailure(error, { results, failedBox: box });
+              throw error;
+            }
+
+            await sleep(zplLabelSpacingMs);
+            continue;
+          }
 
         try {
           logEvent(
@@ -2030,6 +6106,16 @@ app.post("/api/offline/print-labels", async (req, res) => {
 
         await sleep(printJobSpacingMs);
       }
+      } finally {
+        if (validated.printEngine === "zpl") {
+          const requestScope = getRequestScopeFromCount(validated.requestedCount);
+          logInfo(
+            "zpl_queue_complete",
+            { station: validated.station, lotNumber: validated.lotNumber, printerIp: validated.zpl.printerIp, printerPort: validated.zpl.port, printedCount, requestScope },
+            `[OfflinePrint] Direct ZPL queue complete scope=${requestScope} station=${validated.station} lot=${validated.lotNumber} printer=${validated.zpl.printerIp}:${validated.zpl.port} printed=${printedCount}`
+          );
+        }
+      }
     });
 
     writeOfflineAudit("offline_print_success", req, buildOfflinePrintAuditDetails(validated, req.body, {
@@ -2046,6 +6132,10 @@ app.post("/api/offline/print-labels", async (req, res) => {
       family: validated.family,
       printer: validated.printer,
       template: validated.template,
+      printEngine: validated.printEngine,
+      zplPrinterIp: validated.zpl?.printerIp || null,
+      zplPrinterPort: validated.zpl?.port || null,
+      zplTemplatePath: validated.zpl?.templatePath || null,
       lotNumber: validated.lotNumber,
       firstBox: validated.firstBox,
       lastBox: validated.lastBox,
@@ -2063,14 +6153,164 @@ app.post("/api/offline/print-labels", async (req, res) => {
     }
 
     return res.status(error.statusCode || 500).json({
-      ok: false,
-      error: error.code || "OFFLINE_PRINT_FAILED",
-      message: error.message,
-      details: error.details || undefined,
+      ...buildErrorResponsePayload(error, "OFFLINE_PRINT_FAILED"),
       bartender: error.response?.data || undefined
     });
   } finally {
     if (lockKey) activePrintJobs.delete(lockKey);
+  }
+});
+
+app.get("/api/print/zpl-queue", requireOfflineLocalAccess, (req, res) => {
+  try {
+    return res.json(getZplQueueStatusPayload());
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "ZPL_QUEUE_STATUS_ERROR", message: error.message });
+  }
+});
+
+app.get("/api/print/logs", requireOfflineLocalAccess, (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(getPrintLogsPayload(req.query || {}));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "PRINT_LOG_READ_ERROR", message: error.message });
+  }
+});
+
+app.get("/api/print/template-lab/catalog", requireOfflineLocalAccess, (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(getTemplateLabCatalogPayload());
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_LAB_CATALOG_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
+app.post("/api/print/template-lab/profile", requireOfflineLocalAccess, (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(saveTemplateLabProfileOverrides(req.body || {}));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_LAB_PROFILE_SAVE_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
+app.get("/api/print/template-preview", requireOfflineLocalAccess, async (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(await buildTemplatePreviewPayload(req.query || {}));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_PREVIEW_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
+app.post("/api/print/template-preview", requireOfflineLocalAccess, async (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(await buildTemplatePreviewPayload(req.body || {}));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_PREVIEW_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
+app.post("/api/print/template-test-send", requireOfflineLocalAccess, async (req, res) => {
+  const body = req.body || {};
+  if (body.confirmTestPrint !== true) {
+    return res.status(400).json({
+      ok: false,
+      error: "TEMPLATE_TEST_CONFIRM_REQUIRED",
+      message: "confirmTestPrint:true is required before sending rendered ZPL directly to a printer."
+    });
+  }
+
+  const printerIp = trimString(body.printerIp || body.host);
+  const printerPort = Number(body.port || body.printerPort || 9100);
+  if (!printerIp) {
+    return res.status(400).json({ ok: false, error: "VALIDATION_ERROR", message: "printerIp is required." });
+  }
+  if (!Number.isInteger(printerPort) || printerPort <= 0 || printerPort > 65535) {
+    return res.status(400).json({ ok: false, error: "VALIDATION_ERROR", message: "port must be a valid TCP port." });
+  }
+
+  let preview = null;
+  try {
+    preview = await buildTemplatePreviewPayload(body);
+    const bytes = Buffer.byteLength(preview.renderedZpl, "utf8");
+    logInfo("template_test_send_attempt", {
+      template: preview.template,
+      profileKey: preview.profileKey,
+      printerIp,
+      printerPort,
+      lotNumber: preview.sampleData.lotNumber,
+      box: preview.sampleData.boxNumber,
+      bytes
+    });
+
+    const sendFn = templateTestSendFunctionForTests || sendZplOverTcp;
+    const startedAt = Date.now();
+    const sendResult = await sendFn({
+      printerIp,
+      port: printerPort,
+      zpl: preview.renderedZpl,
+      timeoutMs: getZplTcpTimeoutMs()
+    });
+
+    logInfo("template_test_send_success", {
+      template: preview.template,
+      profileKey: preview.profileKey,
+      printerIp,
+      printerPort,
+      lotNumber: preview.sampleData.lotNumber,
+      box: preview.sampleData.boxNumber,
+      bytes,
+      durationMs: Date.now() - startedAt,
+      bytesSent: sendResult?.bytesSent ?? bytes,
+      sendAccepted: true,
+      physicalPrintConfirmed: false
+    });
+
+    return res.json({
+      ok: true,
+      testPrint: true,
+      queued: false,
+      template: preview.template,
+      profileKey: preview.profileKey,
+      printerIp,
+      printerPort,
+      bytesSent: sendResult?.bytesSent ?? bytes,
+      sendAccepted: true,
+      physicalPrintConfirmed: false,
+      message: "Template test ZPL sent directly to printer. This bypassed the production queue."
+    });
+  } catch (error) {
+    logError("template_test_send_error", {
+      template: preview?.template || trimString(body.template || body.templateName),
+      profileKey: preview?.profileKey || trimString(body.profileKey),
+      printerIp,
+      printerPort,
+      lotNumber: preview?.sampleData?.lotNumber || trimString(body.lotNumber),
+      box: preview?.sampleData?.boxNumber || trimString(body.boxNumber || body.box),
+      message: error.message,
+      code: error.code || null
+    });
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_TEST_SEND_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
+app.post("/api/print/zpl-queue/resume", requireOfflineLocalAccess, (req, res) => {
+  try {
+    return res.json(resumeZplQueue(req.body || {}));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "ZPL_QUEUE_RESUME_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
+app.post("/api/print/zpl-queue/retry-failed", requireOfflineLocalAccess, (req, res) => {
+  try {
+    return res.json(retryFailedZplQueueItem(req.body || {}));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "ZPL_QUEUE_RETRY_FAILED_ERROR", message: error.message, details: error.details || undefined });
   }
 });
 
@@ -2087,6 +6327,8 @@ app.post(
   upload.single("file"),
   handleUploadDocument
 );
+
+startAllZplQueueWorkers();
 
 async function handleUploadDocument(req, res) {
   try {
@@ -2201,6 +6443,34 @@ function normalizeRequestedPoundSampleLabelsFromBody(body) {
   return out;
 }
 
+function buildSampleNamedDataSources({ lotNumber, box, rfid = "", pounds = "", lotLabelData = {}, labelKind, byPounds = false }) {
+  const kind = normalizeSampleLabelKind(labelKind);
+  return {
+    lot: lotNumber,
+    firstbox: String(box),
+    box: String(box),
+    Box: String(box),
+    RFID: String(rfid || ""),
+    rfid: String(rfid || ""),
+    pounds: pounds == null ? "" : String(pounds),
+    po: lotLabelData.po,
+    prodname: lotLabelData.prodname,
+    proddesc: lotLabelData.proddesc,
+    prodnum: lotLabelData.prodnum,
+    product: lotLabelData.product,
+    color: lotLabelData.color,
+    type: lotLabelData.type,
+    tolling: lotLabelData.tolling,
+    company: lotLabelData.company,
+    machine: lotLabelData.machine,
+    labeltype: kind === "QCRetain" ? "Retain Sample" : "QC Sample",
+    sampletype: kind === "QCRetain" ? "Retain" : "QC",
+    sampleLabel: String(box),
+    frequencyCheck: byPounds ? String(pounds || box) : "",
+    erp: ""
+  };
+}
+
 async function handlePrintSampleLabels(req, res) {
   let lockKey = null;
 
@@ -2263,7 +6533,8 @@ async function handlePrintSampleLabels(req, res) {
     }
 
     const lotNumber = await getLotNumberById(baseUrl, effectiveLotId);
-    const { printer, template } = resolvePrinterAndSampleTemplate({ station, labelKind, byPounds });
+    const printTarget = resolveSamplePrintTarget({ station, labelKind, byPounds });
+    const { printer, template } = printTarget;
 
     lockKey = `${station}|${normalizeGuid(effectiveLotId)}|${labelKind}${byPounds ? "|pounds" : ""}`;
     const existing = activePrintJobs.get(lockKey);
@@ -2289,6 +6560,30 @@ async function handlePrintSampleLabels(req, res) {
 
     if (byPounds) {
       if (dryRun === true) {
+        const zplPreview = printTarget.printEngine === "zpl" ? [] : null;
+        if (printTarget.printEngine === "zpl") {
+          const dryRunLotLabelData = await getLotLabelData(baseUrl, effectiveLotId, { includeMachine: true, includeCompany: true });
+          for (const labelValue of requestedPoundLabels) {
+            const namedDataSources = buildSampleNamedDataSources({
+              lotNumber,
+              box: labelValue,
+              pounds: labelValue,
+              lotLabelData: dryRunLotLabelData,
+              labelKind,
+              byPounds: true
+            });
+            zplPreview.push(renderDirectZplDryRunLabel({
+              zpl: printTarget.zpl,
+              station,
+              lotNumber,
+              box: labelValue,
+              rfid: "",
+              namedDataSources,
+              requiresRfidEncoding: false
+            }));
+          }
+        }
+
         return res.json({
           ok: true,
           dryRun: true,
@@ -2300,9 +6595,16 @@ async function handlePrintSampleLabels(req, res) {
           byPounds: true,
           printer,
           template,
+          ...(printTarget.printEngine === "zpl" ? {
+            printEngine: printTarget.printEngine,
+            zplPrinterIp: printTarget.zpl.printerIp,
+            zplPrinterPort: printTarget.zpl.port,
+            zplTemplatePath: printTarget.zpl.templatePath
+          } : {}),
           requestedPoundLabels,
           requestedCount: requestedPoundLabels.length,
-          missingBoxes: []
+          missingBoxes: [],
+          ...(printTarget.printEngine === "zpl" ? { zplPreview } : {})
         });
       }
 
@@ -2313,9 +6615,80 @@ async function handlePrintSampleLabels(req, res) {
 
       logInfo(
         "sample_print_pounds_sequence_resolved",
-        { station, lotNumber, labelKind, printer, template, requestedPoundLabels, printJobSpacingMs },
+        { station, lotNumber, labelKind, printer, template, printEngine: printTarget.printEngine, zplPrinterIp: printTarget.zpl?.printerIp || null, requestedPoundLabels, printJobSpacingMs },
         `[PrintSvc] Sample-label by-pounds sequence resolved station=${station} lot=${lotNumber} kind=${labelKind}: ${requestedPoundLabels.join(",")}`
       );
+
+      if (printTarget.printEngine === "zpl") {
+        const jobId = makeZplJobId();
+        const items = [];
+
+        for (const poundLabel of requestedPoundLabels) {
+          const labelValue = String(poundLabel);
+          const logRfid = `${lotNumber}-${labelValue.replace(/\s+/g, "")}`;
+          const namedDataSources = buildSampleNamedDataSources({
+            lotNumber,
+            box: labelValue,
+            rfid: "",
+            pounds: labelValue,
+            lotLabelData,
+            labelKind,
+            byPounds: true
+          });
+
+          items.push(buildZplQueueItem({
+            jobId,
+            station,
+            family: printTarget.directZplFamily,
+            lotNumber,
+            box: labelValue,
+            rfid: logRfid,
+            zpl: printTarget.zpl,
+            namedDataSources,
+            requiresRfidEncoding: false,
+            labelKind,
+            sampleByPounds: true,
+            printLog: {
+              baseUrl,
+              lotId: effectiveLotId,
+              inventoryId: null,
+              printedBy,
+              successResult: `Success-${labelKind}-Pounds`,
+              successNotes: `By-pounds sample label: ${labelValue}`,
+              failedResult: `Failed-${labelKind}-Pounds`
+            }
+          }));
+        }
+
+        const queuedItems = enqueueDirectZplQueueItems(items);
+        return res.json(buildDirectZplQueueResponse({
+          jobId,
+          station,
+          requestedFamily: labelKind,
+          family: printTarget.directZplFamily,
+          lotNumber,
+          requestedBoxes: requestedPoundLabels,
+          firstBox: requestedPoundLabels[0],
+          lastBox: requestedPoundLabels[requestedPoundLabels.length - 1],
+          requestedCount: requestedPoundLabels.length,
+          missingBoxes: [],
+          printerIp: printTarget.zpl.printerIp,
+          printerPort: printTarget.zpl.port,
+          templatePath: printTarget.zpl.templatePath,
+          queuedItems,
+          skippedDuplicates: [],
+          extra: {
+            baseUrl,
+            lotId: normalizeGuid(effectiveLotId),
+            labelKind,
+            byPounds: true,
+            requestedPoundLabels,
+            printEngine: printTarget.printEngine,
+            printer,
+            template
+          }
+        }));
+      }
 
       await enqueuePrinterWork(printer, async () => {
         for (const poundLabel of requestedPoundLabels) {
@@ -2424,6 +6797,36 @@ async function handlePrintSampleLabels(req, res) {
     const missingBoxes = requestedBoxes.filter((b) => !byBox.has(b));
 
     if (dryRun === true) {
+      const zplPreview = printTarget.printEngine === "zpl" ? [] : null;
+      if (printTarget.printEngine === "zpl") {
+        const dryRunLotLabelData = await getLotLabelData(baseUrl, effectiveLotId, { includeMachine: true, includeCompany: true });
+        for (const box of requestedBoxes) {
+          const row = byBox.get(box);
+          if (!row) continue;
+          const rfid = row[DV_INV_RFID_COL] || `${lotNumber}-B${pad2(box)}`;
+          const poundsVal = row[DV_INV_WEIGHT_COL];
+          const isNoWeight = isTruthyDataverseBoolean(row[DV_INV_NOWEIGHT_COL]);
+          const namedDataSources = buildSampleNamedDataSources({
+            lotNumber,
+            box,
+            rfid,
+            pounds: isNoWeight ? "_" : (poundsVal == null ? "" : String(poundsVal)),
+            lotLabelData: dryRunLotLabelData,
+            labelKind,
+            byPounds: false
+          });
+          zplPreview.push(renderDirectZplDryRunLabel({
+            zpl: printTarget.zpl,
+            station,
+            lotNumber,
+            box,
+            rfid,
+            namedDataSources,
+            requiresRfidEncoding: false
+          }));
+        }
+      }
+
       return res.json({
         ok: true,
         dryRun: true,
@@ -2434,10 +6837,17 @@ async function handlePrintSampleLabels(req, res) {
         labelKind,
         printer,
         template,
+        ...(printTarget.printEngine === "zpl" ? {
+          printEngine: printTarget.printEngine,
+          zplPrinterIp: printTarget.zpl.printerIp,
+          zplPrinterPort: printTarget.zpl.port,
+          zplTemplatePath: printTarget.zpl.templatePath
+        } : {}),
         requestedBoxes,
         requestedCount: requestedBoxes.length,
         foundCount: rows.length,
-        missingBoxes
+        missingBoxes,
+        ...(printTarget.printEngine === "zpl" ? { zplPreview } : {})
       });
     }
 
@@ -2461,9 +6871,96 @@ async function handlePrintSampleLabels(req, res) {
 
     logInfo(
       "sample_print_sequence_resolved",
-      { station, lotNumber, labelKind, printer, template, requestedBoxes, printJobSpacingMs },
+      { station, lotNumber, labelKind, printer, template, printEngine: printTarget.printEngine, zplPrinterIp: printTarget.zpl?.printerIp || null, requestedBoxes, printJobSpacingMs },
       `[PrintSvc] Sample-label sequence resolved station=${station} lot=${lotNumber} kind=${labelKind}: ${requestedBoxes.join(",")}`
     );
+
+    if (printTarget.printEngine === "zpl") {
+      const jobId = makeZplJobId();
+      const items = [];
+
+      for (const box of requestedBoxes) {
+        const row = byBox.get(box);
+
+        if (!row) {
+          await writePrintLog(baseUrl, {
+            lotId: effectiveLotId,
+            inventoryId: null,
+            rfid: `${lotNumber}-B${pad2(box)}`,
+            station,
+            printedBy,
+            result: `Skipped-${labelKind}`,
+            notes: "Inventory row missing for this sample-label box number"
+          });
+          continue;
+        }
+
+        const inventoryId = row[DV_INV_ID_COL];
+        const rfid = row[DV_INV_RFID_COL] || `${lotNumber}-B${pad2(box)}`;
+        const poundsVal = row[DV_INV_WEIGHT_COL];
+        const isNoWeight = isTruthyDataverseBoolean(row[DV_INV_NOWEIGHT_COL]);
+        const namedDataSources = buildSampleNamedDataSources({
+          lotNumber,
+          box,
+          rfid,
+          pounds: isNoWeight ? "_" : (poundsVal == null ? "" : String(poundsVal)),
+          lotLabelData,
+          labelKind,
+          byPounds: false
+        });
+
+        items.push(buildZplQueueItem({
+          jobId,
+          station,
+          family: printTarget.directZplFamily,
+          lotNumber,
+          box,
+          rfid,
+          zpl: printTarget.zpl,
+          namedDataSources,
+          requiresRfidEncoding: false,
+          labelKind,
+          sampleByPounds: false,
+          printLog: {
+            baseUrl,
+            lotId: effectiveLotId,
+            inventoryId,
+            printedBy,
+            successResult: `Success-${labelKind}`,
+            successNotes: "",
+            failedResult: `Failed-${labelKind}`
+          }
+        }));
+      }
+
+      const queuedItems = enqueueDirectZplQueueItems(items);
+      return res.json(buildDirectZplQueueResponse({
+        jobId,
+        station,
+        requestedFamily: labelKind,
+        family: printTarget.directZplFamily,
+        lotNumber,
+        requestedBoxes,
+        firstBox,
+        lastBox,
+        requestedCount: requestedBoxes.length,
+        missingBoxes,
+        printerIp: printTarget.zpl.printerIp,
+        printerPort: printTarget.zpl.port,
+        templatePath: printTarget.zpl.templatePath,
+        queuedItems,
+        skippedDuplicates: [],
+        extra: {
+          baseUrl,
+          lotId: normalizeGuid(effectiveLotId),
+          labelKind,
+          byPounds: false,
+          printEngine: printTarget.printEngine,
+          printer,
+          template
+        }
+      }));
+    }
 
     await enqueuePrinterWork(printer, async () => {
       for (const box of requestedBoxes) {
@@ -2574,7 +7071,7 @@ async function handlePrintSampleLabels(req, res) {
     });
   } catch (e) {
     logError("sample_print_request_failed", { message: e.message, bartender: e.response?.data || null, lockKey });
-    return res.status(500).json({ ok: false, message: e.message, bartender: e.response?.data || null });
+    return res.status(e.statusCode || 500).json({ ok: false, error: e.code || "SAMPLE_PRINT_FAILED", message: e.message, details: e.details || undefined, bartender: e.response?.data || null });
   } finally {
     if (lockKey) activePrintJobs.delete(lockKey);
   }
@@ -2658,32 +7155,36 @@ async function handlePrintLot(req, res) {
       effectiveLotId = await getLotIdByLotNumber(baseUrl, lotNumberFromBody);
     }
 
-    // Acquire lock ONLY for real prints (not dryRun)
-    lockKey = `${station}|${normalizeGuid(effectiveLotId)}`;
-
-    const existing = activePrintJobs.get(lockKey);
-    const now = Date.now();
-
-    // Auto-expire stale lock
-    if (existing && (now - existing) > PRINT_LOCK_TTL_MS) {
-      logWarn("print_lock_expired", { lockKey, ageMs: now - existing }, `[PrintSvc] Expiring stale print lock for ${lockKey} (ageMs=${now - existing})`);
-      activePrintJobs.delete(lockKey);
-    }
-
-    if (activePrintJobs.has(lockKey)) {
-      return res.status(409).json({
-        ok: false,
-        code: "PRINT_IN_PROGRESS",
-        message: "A print job is already running for this station and lot. Please wait a moment and try again.",
-        station,
-        lotId: normalizeGuid(effectiveLotId)
-      });
-    }
-
-    activePrintJobs.set(lockKey, now);
-
     const lotNumber = await getLotNumberById(baseUrl, effectiveLotId);
-    const { family, printer, template } = resolvePrinterAndTemplate({ station, lotNumber });
+    const printTarget = resolveRfidPrintTarget({ station, lotNumber });
+    const { family, printer, template } = printTarget;
+
+    // BarTender keeps the existing duplicate-print request lock. Direct-ZPL
+    // uses the per-printer queue so separate one-box ERP requests wait their turn.
+    if (!dryRun && printTarget.printEngine !== "zpl") {
+      lockKey = `${station}|${normalizeGuid(effectiveLotId)}`;
+
+      const existing = activePrintJobs.get(lockKey);
+      const now = Date.now();
+
+      // Auto-expire stale lock
+      if (existing && (now - existing) > PRINT_LOCK_TTL_MS) {
+        logWarn("print_lock_expired", { lockKey, ageMs: now - existing }, `[PrintSvc] Expiring stale print lock for ${lockKey} (ageMs=${now - existing})`);
+        activePrintJobs.delete(lockKey);
+      }
+
+      if (activePrintJobs.has(lockKey)) {
+        return res.status(409).json({
+          ok: false,
+          code: "PRINT_IN_PROGRESS",
+          message: "A print job is already running for this station and lot. Please wait a moment and try again.",
+          station,
+          lotId: normalizeGuid(effectiveLotId)
+        });
+      }
+
+      activePrintJobs.set(lockKey, now);
+    }
 
     const rows = await getInventoryRowsForLotRange(baseUrl, effectiveLotId, fb, lb);
 
@@ -2716,6 +7217,44 @@ async function handlePrintLot(req, res) {
     const missingBoxes = requestedBoxes.filter((b) => !byBox.has(b));
 
     if (dryRun === true) {
+      const zplPreview = printTarget.printEngine === "zpl" ? [] : null;
+      if (printTarget.printEngine === "zpl") {
+        const dryRunLotLabelData = await getLotLabelData(baseUrl, effectiveLotId);
+
+        for (const box of requestedBoxes) {
+          const row = byBox.get(box);
+          if (!row) continue;
+
+          const rfid = row[DV_INV_RFID_COL] || `${lotNumber}-B${pad2(box)}`;
+          const poundsVal = row[DV_INV_WEIGHT_COL];
+          const isNoWeight = isTruthyDataverseBoolean(row[DV_INV_NOWEIGHT_COL]);
+          const named = {
+            lot: lotNumber,
+            firstbox: String(box),
+            RFID: String(rfid),
+            pounds: isNoWeight ? "_" : (poundsVal == null ? "" : String(poundsVal)),
+            po: dryRunLotLabelData.po,
+            prodname: dryRunLotLabelData.prodname,
+            proddesc: dryRunLotLabelData.proddesc,
+            prodnum: dryRunLotLabelData.prodnum,
+            product: dryRunLotLabelData.product,
+            color: dryRunLotLabelData.color,
+            type: dryRunLotLabelData.type,
+            tolling: dryRunLotLabelData.tolling,
+            erp: ""
+          };
+
+          zplPreview.push(renderDirectZplDryRunLabel({
+            zpl: printTarget.zpl,
+            station,
+            lotNumber,
+            box,
+            rfid,
+            namedDataSources: named
+          }));
+        }
+      }
+
       logInfo("print_dry_run", { station, lotNumber, missingBoxesCount: missingBoxes.length, firstBox: fb, lastBox: lb }, `[PrintSvc] DRYRUN station=${station} lot=${lotNumber} missing=${missingBoxes.length}`);
       return res.json({
         ok: true,
@@ -2727,11 +7266,16 @@ async function handlePrintLot(req, res) {
         family,
         printer,
         template,
+        printEngine: printTarget.printEngine,
+        zplPrinterIp: printTarget.zpl?.printerIp || null,
+        zplPrinterPort: printTarget.zpl?.port || null,
+        zplTemplatePath: printTarget.zpl?.templatePath || null,
         firstBox: fb,
         lastBox: lb,
         requestedCount: requestedBoxes.length,
         foundCount: rows.length,
-        missingBoxes
+        missingBoxes,
+        zplPreview
       });
     }
 
@@ -2751,19 +7295,14 @@ async function handlePrintLot(req, res) {
 
     const lotLabelData = await getLotLabelData(baseUrl, effectiveLotId);
     const printedBy = req.user?.preferred_username || req.user?.upn || "";
-    const results = [];
-    const printJobSpacingMs = getSafePrintJobSpacingMs();
 
-    logInfo(
-      "print_sequence_resolved",
-      { station, lotNumber, printer, firstBox: fb, lastBox: lb, requestedBoxes, printJobSpacingMs },
-      `[PrintSvc] Print sequence resolved station=${station} lot=${lotNumber}: ${requestedBoxes.join(",")}`
-    );
+    if (printTarget.printEngine === "zpl") {
+      const jobId = makeZplJobId();
+      const items = [];
+      const queuedBoxes = [];
 
-    await enqueuePrinterWork(printer, async () => {
       for (const box of requestedBoxes) {
         const row = byBox.get(box);
-
         if (!row) {
           await writePrintLog(baseUrl, {
             lotId: effectiveLotId,
@@ -2782,7 +7321,7 @@ async function handlePrintLot(req, res) {
         const poundsVal = row[DV_INV_WEIGHT_COL];
         const isNoWeight = isTruthyDataverseBoolean(row[DV_INV_NOWEIGHT_COL]);
 
-        const named = {
+        const namedDataSources = {
           lot: lotNumber,
           firstbox: String(box),
           RFID: String(rfid),
@@ -2798,50 +7337,193 @@ async function handlePrintLot(req, res) {
           erp: ""
         };
 
-        try {
-          logEvent("print_attempt", { station, lotNumber, box, rfid, printer, template }, `[PrintSvc] -> BarTender PRINT box=${box} rfid=${rfid} printer="${printer}" template="${template}"`);
-
-          const action = await bartenderPrintBTW({
-            documentPath: template,
-            printerName: printer,
-            namedDataSources: named,
-            copies: 1
-          });
-
-          const actionId = action?.Id || null;
-          const status = action?.Status || null;
-
-          logInfo("print_success", { station, lotNumber, box, rfid, printer, template, actionId, status }, `[PrintSvc] <- BarTender actionId=${actionId} status=${status} box=${box}`);
-
-          results.push({ box, rfid, pounds: named.pounds, actionId, status });
-
-          await writePrintLog(baseUrl, {
+        queuedBoxes.push(box);
+        items.push(buildZplQueueItem({
+          jobId,
+          station,
+          family,
+          lotNumber,
+          box,
+          rfid,
+          zpl: printTarget.zpl,
+          namedDataSources,
+          printLog: {
+            baseUrl,
             lotId: effectiveLotId,
             inventoryId,
-            rfid,
-            station,
-            printedBy,
-            result: "Success",
-            notes: ""
-          });
-        } catch (e) {
-          const msg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
-          logError("print_failure", { station, lotNumber, box, rfid, printer, template, message: msg }, `[PrintSvc] FAILED box=${box} lot=${lotNumber} station=${station}: ${msg}`);
+            printedBy
+          }
+        }));
+      }
 
-          await writePrintLog(baseUrl, {
-            lotId: effectiveLotId,
-            inventoryId,
-            rfid,
-            station,
-            printedBy,
-            result: "Failed",
-            notes: msg
-          });
-
-          throw e;
+      const { queuedItems, skippedDuplicates } = enqueueNormalDirectZplQueueItems(items);
+      return res.json(buildDirectZplQueueResponse({
+        jobId,
+        station,
+        family,
+        lotNumber,
+        requestedBoxes,
+        firstBox: fb,
+        lastBox: lb,
+        requestedCount: requestedBoxes.length,
+        missingBoxes,
+        printerIp: printTarget.zpl.printerIp,
+        printerPort: printTarget.zpl.port,
+        templatePath: printTarget.zpl.templatePath,
+        queuedItems,
+        skippedDuplicates,
+        extra: {
+          baseUrl,
+          lotId: normalizeGuid(effectiveLotId)
         }
+      }));
+    }
 
-        await sleep(printJobSpacingMs);
+    const results = [];
+    const printJobSpacingMs = getSafePrintJobSpacingMs();
+    const zplLabelSpacingMs = getZplLabelSpacingMs();
+    const queueKey = printTarget.printEngine === "zpl" ? getZplQueueKey(printTarget.zpl) : printer;
+
+    logInfo(
+      "print_sequence_resolved",
+      { station, lotNumber, printer, printEngine: printTarget.printEngine, zplPrinterIp: printTarget.zpl?.printerIp || null, firstBox: fb, lastBox: lb, requestedBoxes, printJobSpacingMs, zplLabelSpacingMs },
+      `[PrintSvc] Print sequence resolved station=${station} lot=${lotNumber}: ${requestedBoxes.join(",")}`
+    );
+
+    await enqueuePrinterWork(queueKey, async () => {
+      if (printTarget.printEngine === "zpl") {
+        const requestScope = getRequestScopeFromCount(requestedBoxes.length);
+        logInfo(
+          "zpl_queue_start",
+          { station, lotNumber, printerIp: printTarget.zpl.printerIp, printerPort: printTarget.zpl.port, requestedBoxes, requestedCount: requestedBoxes.length, requestScope, labelSpacingMs: zplLabelSpacingMs },
+          `[PrintSvc] Direct ZPL queue start scope=${requestScope} station=${station} lot=${lotNumber} printer=${printTarget.zpl.printerIp}:${printTarget.zpl.port}`
+        );
+      }
+
+      try {
+        for (const box of requestedBoxes) {
+          const row = byBox.get(box);
+
+          if (!row) {
+            await writePrintLog(baseUrl, {
+              lotId: effectiveLotId,
+              inventoryId: null,
+              rfid: `${lotNumber}-B${pad2(box)}`,
+              station,
+              printedBy,
+              result: "Skipped",
+              notes: "Inventory row missing for this box number"
+            });
+            continue;
+          }
+
+          const inventoryId = row[DV_INV_ID_COL];
+          const rfid = row[DV_INV_RFID_COL] || `${lotNumber}-B${pad2(box)}`;
+          const poundsVal = row[DV_INV_WEIGHT_COL];
+          const isNoWeight = isTruthyDataverseBoolean(row[DV_INV_NOWEIGHT_COL]);
+
+          const named = {
+            lot: lotNumber,
+            firstbox: String(box),
+            RFID: String(rfid),
+            pounds: isNoWeight ? "_" : (poundsVal == null ? "" : String(poundsVal)),
+            po: lotLabelData.po,
+            prodname: lotLabelData.prodname,
+            proddesc: lotLabelData.proddesc,
+            prodnum: lotLabelData.prodnum,
+            product: lotLabelData.product,
+            color: lotLabelData.color,
+            type: lotLabelData.type,
+            tolling: lotLabelData.tolling,
+            erp: ""
+          };
+
+          try {
+            if (printTarget.printEngine === "zpl") {
+              assertNoRecentZplDuplicate({ station, lotNumber, box, rfid });
+
+              const result = await sendDirectZplLabel({
+                zpl: printTarget.zpl,
+                station,
+                lotNumber,
+                box,
+                rfid,
+                namedDataSources: named
+              });
+
+              results.push({ ...result, pounds: named.pounds });
+              markRecentZplSendAccepted({ station, lotNumber, box, rfid });
+
+              await writePrintLog(baseUrl, {
+                lotId: effectiveLotId,
+                inventoryId,
+                rfid,
+                station,
+                printedBy,
+                result: "Success",
+                notes: "Direct ZPL"
+              });
+            } else {
+              logEvent("print_attempt", { station, lotNumber, box, rfid, printer, template }, `[PrintSvc] -> BarTender PRINT box=${box} rfid=${rfid} printer="${printer}" template="${template}"`);
+
+              const action = await bartenderPrintBTW({
+                documentPath: template,
+                printerName: printer,
+                namedDataSources: named,
+                copies: 1
+              });
+
+              const actionId = action?.Id || null;
+              const status = action?.Status || null;
+
+              logInfo("print_success", { station, lotNumber, box, rfid, printer, template, actionId, status }, `[PrintSvc] <- BarTender actionId=${actionId} status=${status} box=${box}`);
+
+              results.push({ box, rfid, pounds: named.pounds, actionId, status });
+
+              await writePrintLog(baseUrl, {
+                lotId: effectiveLotId,
+                inventoryId,
+                rfid,
+                station,
+                printedBy,
+                result: "Success",
+                notes: ""
+              });
+            }
+          } catch (e) {
+            const msg = e.response?.data ? JSON.stringify(e.response.data) : e.message;
+            if (printTarget.printEngine !== "zpl") {
+              logError("print_failure", { station, lotNumber, box, rfid, printer, template, message: msg }, `[PrintSvc] FAILED box=${box} lot=${lotNumber} station=${station}: ${msg}`);
+            }
+
+            await writePrintLog(baseUrl, {
+              lotId: effectiveLotId,
+              inventoryId,
+              rfid,
+              station,
+              printedBy,
+              result: "Failed",
+              notes: msg
+            });
+
+            if (printTarget.printEngine === "zpl") {
+              decorateZplPartialFailure(e, { results, failedBox: box });
+            }
+
+            throw e;
+          }
+
+          await sleep(printTarget.printEngine === "zpl" ? zplLabelSpacingMs : printJobSpacingMs);
+        }
+      } finally {
+        if (printTarget.printEngine === "zpl") {
+          const requestScope = getRequestScopeFromCount(requestedBoxes.length);
+          logInfo(
+            "zpl_queue_complete",
+            { station, lotNumber, printerIp: printTarget.zpl.printerIp, printerPort: printTarget.zpl.port, printedCount: results.length, requestScope },
+            `[PrintSvc] Direct ZPL queue complete scope=${requestScope} station=${station} lot=${lotNumber} printer=${printTarget.zpl.printerIp}:${printTarget.zpl.port} printed=${results.length}`
+          );
+        }
       }
     });
 
@@ -2855,6 +7537,10 @@ async function handlePrintLot(req, res) {
       family,
       printer,
       template,
+      printEngine: printTarget.printEngine,
+      zplPrinterIp: printTarget.zpl?.printerIp || null,
+      zplPrinterPort: printTarget.zpl?.port || null,
+      zplTemplatePath: printTarget.zpl?.templatePath || null,
       firstBox: fb,
       lastBox: lb,
       requestedCount: requestedBoxes.length,
@@ -2863,8 +7549,8 @@ async function handlePrintLot(req, res) {
       results
     });
   } catch (e) {
-    logError("print_request_failed", { message: e.message, bartender: e.response?.data || null, lockKey });
-    return res.status(500).json({ ok: false, message: e.message, bartender: e.response?.data || null });
+    logError("print_request_failed", { message: e.message, code: e.code || null, bartender: e.response?.data || null, lockKey });
+    return res.status(e.statusCode || 500).json(buildErrorResponsePayload(e, "PRINT_FAILED"));
   } finally {
     if (lockKey) activePrintJobs.delete(lockKey);
   }
@@ -2878,9 +7564,55 @@ if (require.main === module) {
 
 module.exports = {
   app,
+  assertNoRecentZplDuplicate,
+  buildErrorResponsePayload,
+  buildDirectZplQueueResponse,
+  buildZplQueueItem,
   buildOfflineNamedDataSources,
+  clearRecentZplDuplicateGuard,
+  clearZplWorkerStateForTests,
+  decorateZplPartialFailure,
+  enqueuePrinterWork,
+  enqueueDirectZplQueueItems,
+  enqueueNormalDirectZplQueueItems,
   generateOfflineRfid,
+  getConfiguredPrintEngine,
+  getDirectZplEnabledScopes,
+  getZplBatchCollectMs,
+  getZplBatchInterBatchDelayMs,
+  getZplBatchMaxBytes,
+  getZplBatchMaxLabels,
+  getZplDuplicatePolicy,
+  getZplMaxLabelsPerConnection,
+  getZplSocketIdleCloseMs,
+  getZplSocketMode,
+  getZplStaleSendingThresholdMs,
+  getZplTransportSettings,
+  getZplQueueStatusPayload,
+  getZplPersistentSocketStatusForAll,
+  getTemplateLabCatalogPayload,
+  saveTemplateLabProfileOverrides,
+  isQueueItemSafeToRetry,
+  markRecentZplSendAccepted,
   normalizeOfflineFamily,
+  recoverStaleSendingItems,
   resolvePrinterAndTemplate,
-  resolvePrinterAndTemplateForFamily
+  resolvePrinterAndSampleTemplate,
+  resolvePrinterAndTemplateForFamily,
+  resolveRfidPrintTarget,
+  resolveRfidPrintTargetForFamily,
+  resolveSamplePrintTarget,
+  resolveZplPrinterAndTemplate,
+  resetDirectZplQueueSendFunction,
+  resetTemplateTestSendFunction,
+  retryFailedZplQueueItem,
+  resumeZplQueue,
+  sendDirectZplLabel,
+  sendDirectZplNonRfidLabel,
+  setDirectZplQueueSendFunction,
+  setTemplateTestSendFunction,
+  setZplSocketFactoryForTests,
+  resetZplSocketFactoryForTests,
+  startAllZplQueueWorkers,
+  startZplQueueWorkerForPrinter
 };
