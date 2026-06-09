@@ -127,19 +127,42 @@ const DEFAULT_DIRECT_ZPL_FG_TEMPLATE_PATHS = Object.freeze({
   P8: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl"
 });
 const DEFAULT_DIRECT_ZPL_SAMPLE_TEMPLATE_PATHS = Object.freeze({
-  SAMPLE: Object.freeze({ P3: "C:\\RFID\\zpl\\QCSample-P3.template.zpl" }),
-  RETAIN: Object.freeze({ P3: "C:\\RFID\\zpl\\QCRetain-P3.template.zpl" }),
-  SAMPLE_POUNDS: Object.freeze({ P3: "C:\\RFID\\zpl\\QCSamplePounds-P3.template.zpl" })
+  SAMPLE: Object.freeze({
+    P3: "C:\\RFID\\zpl\\QCSample-P3.template.zpl",
+    P8: "C:\\RFID\\zpl\\QCSample-P8.template.zpl"
+  }),
+  RETAIN: Object.freeze({
+    P3: "C:\\RFID\\zpl\\QCRetain-P3.template.zpl",
+    P8: "C:\\RFID\\zpl\\QCRetain-P8.template.zpl"
+  }),
+  SAMPLE_POUNDS: Object.freeze({
+    P3: "C:\\RFID\\zpl\\QCSamplePounds-P3.template.zpl",
+    P8: "C:\\RFID\\zpl\\QCSamplePounds-P8.template.zpl"
+  })
 });
 const DIRECT_ZPL_P3_SAMPLE_PRINTER_DEFAULT = Object.freeze({
   ip: "192.168.50.218",
   port: 9100,
   printer: "Zebra ZT230 P3 EXT"
 });
+const DIRECT_ZPL_P8_SAMPLE_PRINTER_DEFAULT = Object.freeze({
+  ip: "192.168.50.214",
+  port: 9100,
+  printer: "Zebra ZT230 P8 State"
+});
 const DIRECT_ZPL_SAMPLE_PRINTER_DEFAULTS = Object.freeze({
-  SAMPLE: Object.freeze({ P3: DIRECT_ZPL_P3_SAMPLE_PRINTER_DEFAULT }),
-  RETAIN: Object.freeze({ P3: DIRECT_ZPL_P3_SAMPLE_PRINTER_DEFAULT }),
-  SAMPLE_POUNDS: Object.freeze({ P3: DIRECT_ZPL_P3_SAMPLE_PRINTER_DEFAULT })
+  SAMPLE: Object.freeze({
+    P3: DIRECT_ZPL_P3_SAMPLE_PRINTER_DEFAULT,
+    P8: DIRECT_ZPL_P8_SAMPLE_PRINTER_DEFAULT
+  }),
+  RETAIN: Object.freeze({
+    P3: DIRECT_ZPL_P3_SAMPLE_PRINTER_DEFAULT,
+    P8: DIRECT_ZPL_P8_SAMPLE_PRINTER_DEFAULT
+  }),
+  SAMPLE_POUNDS: Object.freeze({
+    P3: DIRECT_ZPL_P3_SAMPLE_PRINTER_DEFAULT,
+    P8: DIRECT_ZPL_P8_SAMPLE_PRINTER_DEFAULT
+  })
 });
 const DIRECT_ZPL_QUEUE_STATUSES = Object.freeze([
   "queued",
