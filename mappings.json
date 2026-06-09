@@ -47,10 +47,16 @@
       "P8": "C:\\RFID\\RFID-FG-P8.btw"
     },
     "QCSample": {
-      "P3": "C:\\RFID\\QCSample-P3.btw"
+      "P3": "C:\\RFID\\QCSample-P3.btw",
+      "P8": "C:\\RFID\\QCSample-P8.btw"
     },
     "QCRetain": {
-      "P3": "C:\\RFID\\QCRetain-P3.btw"
+      "P3": "C:\\RFID\\QCRetain-P3.btw",
+      "P8": "C:\\RFID\\QCRetain-P8.btw"
+    },
+    "QCSamplePounds": {
+      "P3": "C:\\RFID\\QCSamplePounds-P3.btw",
+      "P8": "C:\\RFID\\QCSamplePounds-P8.btw"
     }
   },
   "rules": {
@@ -70,6 +76,118 @@
   "sampleStations": {
     "P3": {
       "printer": "Zebra ZT230 P3 EXT"
+    },
+    "P8": {
+      "printer": "Zebra ZT230 P8 State"
+    }
+  },
+  "directZpl": {
+    "printers": {
+      "P1": {
+        "ip": "192.168.50.239",
+        "port": 9100,
+        "templateFamily": "RAW"
+      },
+      "P2": {
+        "ip": "192.168.50.241",
+        "port": 9100,
+        "templateFamily": "RAW"
+      },
+      "P3": {
+        "ip": "192.168.50.223",
+        "port": 9100,
+        "templateFamily": "RAW"
+      },
+      "P4": {
+        "ip": "192.168.50.242",
+        "port": 9100,
+        "templateFamily": "RAW"
+      },
+      "P5": {
+        "ip": "192.168.50.244",
+        "port": 9100,
+        "templateFamily": "RAW"
+      },
+      "P6": {
+        "ip": "192.168.6.240",
+        "port": 9100,
+        "templateFamily": "RAW"
+      },
+      "P7": {
+        "ip": "192.168.8.200",
+        "port": 9100,
+        "templateFamily": "RAW"
+      },
+      "P8": {
+        "ip": "192.168.7.122",
+        "port": 9100,
+        "templateFamily": "RAW"
+      }
+    },
+    "familyPrinters": {
+      "SAMPLE": {
+        "P3": {
+          "printer": "Zebra ZT230 P3 EXT",
+          "ip": "192.168.50.218",
+          "port": 9100
+        },
+        "P8": {
+          "printer": "Zebra ZT230 P8 State",
+          "ip": "192.168.50.214",
+          "port": 9100
+        }
+      },
+      "RETAIN": {
+        "P3": {
+          "printer": "Zebra ZT230 P3 EXT",
+          "ip": "192.168.50.218",
+          "port": 9100
+        },
+        "P8": {
+          "printer": "Zebra ZT230 P8 State",
+          "ip": "192.168.50.214",
+          "port": 9100
+        }
+      },
+      "SAMPLE_POUNDS": {
+        "P3": {
+          "printer": "Zebra ZT230 P3 EXT",
+          "ip": "192.168.50.218",
+          "port": 9100
+        },
+        "P8": {
+          "printer": "Zebra ZT230 P8 State",
+          "ip": "192.168.50.214",
+          "port": 9100
+        }
+      }
+    },
+    "templates": {
+      "RAW": {
+        "P1": "C:\\RFID\\zpl\\RFID-RAW-P1.template.zpl"
+      },
+      "FG": {
+        "P1": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
+        "P2": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
+        "P3": "C:\\RFID\\zpl\\RFID-FG-P3.template.zpl",
+        "P4": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
+        "P5": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
+        "P6": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
+        "P7": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
+        "P8": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl"
+      },
+      "SAMPLE": {
+        "P3": "C:\\RFID\\zpl\\QCSample-P3.template.zpl",
+        "P8": "C:\\RFID\\zpl\\QCSample-P8.template.zpl"
+      },
+      "RETAIN": {
+        "P3": "C:\\RFID\\zpl\\QCRetain-P3.template.zpl",
+        "P8": "C:\\RFID\\zpl\\QCRetain-P8.template.zpl"
+      },
+      "SAMPLE_POUNDS": {
+        "P3": "C:\\RFID\\zpl\\QCSamplePounds-P3.template.zpl",
+        "P8": "C:\\RFID\\zpl\\QCSamplePounds-P8.template.zpl"
+      }
     }
   }
 }
