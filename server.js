@@ -743,7 +743,7 @@ logInfo(
     zplTransportSettings: getZplTransportSettings(),
     zplDuplicatePolicy: getZplDuplicatePolicyHealth().zplDuplicatePolicy,
     zplStaleSendingThresholdMs: getZplStaleSendingThresholdMs(),
-    directZplLimitation: "RAW and FG P1-P8 plus P3 sample/retain labels only; stations controlled by DIRECT_ZPL_ENABLED_SCOPES"
+    directZplLimitation: "RAW and FG P1-P8 plus P3/P8 sample, retain, and sample-by-pounds labels; stations controlled by DIRECT_ZPL_ENABLED_SCOPES"
   },
   `[PrintSvc] Print engine=${startupPrintEngineHealth.printEngine}; direct-ZPL scopes=${getDirectZplEnabledScopes().map((scope) => `${scope.station}:${scope.family}`).join(",")}`
 );
@@ -775,8 +775,12 @@ function resolvePrinterAndSampleTemplate({ station, labelKind, byPounds = false 
 
   const printer = getMappedPrinterForStation(st, "sample", kind);
   const templateValue = byPounds
-    ? QC_SAMPLE_POUNDS_TEMPLATE_FILENAME
-    : mappings.templates?.[kind]?.[st];
+  ? (
+      mappings.templates?.QCSamplePounds?.[st] ||
+      mappings.templates?.SAMPLE_POUNDS?.[st] ||
+      QC_SAMPLE_POUNDS_TEMPLATE_FILENAME
+    )
+  : mappings.templates?.[kind]?.[st];
 
   if (!printer) throw new Error(`No QC/Retain printer mapping for labelKind='${kind}' station='${st}'. Add mappings.sampleStations.${st}.printer in mappings.json.`);
   if (!templateValue) throw new Error(`No sample-label template for labelKind='${kind}' station='${st}'`);
