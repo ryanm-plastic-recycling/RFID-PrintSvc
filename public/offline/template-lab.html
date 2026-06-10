@@ -170,7 +170,7 @@
 
           <details class="tuning-subsection lab-accordion" open>
             <summary>Test Print / Export</summary>
-            <p class="field-help">Export updates the JSON below. Save writes lab-only profile overrides to C:\PrintSvc\template-lab-profiles.json unless ZPL_TEMPLATE_LAB_PROFILE_PATH overrides it. Saved lab profiles affect preview/test rendering only.</p>
+            <p class="field-help">Export updates the JSON below. Save writes lab-only profile overrides to the configured Template Lab profile JSON. Saved lab profiles affect preview/test rendering only.</p>
             <textarea id="profileJson" class="profile-json" spellcheck="false"></textarea>
             <div id="profileSaveResult" class="muted-line"></div>
             <div class="actions">
@@ -179,7 +179,9 @@
               <button id="copyProfileButton" class="secondary" type="button">Copy JSON</button>
               <button id="downloadProfileButton" class="secondary" type="button">Download JSON</button>
               <button id="saveProfileButton" type="button">Save Lab Profile</button>
+              <button id="promoteTemplateButton" class="danger" type="button">Promote Dynamic Template to Production</button>
             </div>
+            <div id="promoteTemplateResult" class="muted-line"></div>
           </details>
         </section>
 

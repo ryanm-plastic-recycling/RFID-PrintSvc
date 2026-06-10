@@ -6,6 +6,7 @@ const os = require("os");
 const path = require("path");
 
 const {
+  FIELD_FIT_DEFINITIONS_COMMENT_PREFIX,
   renderZplTemplate,
   renderZplTemplateFile,
   renderZplTemplateFileWithoutRfid,
@@ -215,6 +216,19 @@ test("fitted field metadata exposes profile-friendly debug values", () => {
   assert.equal(fitted.debug.productDescription.boxW, 300);
 });
 
+test("template field-fit metadata comments affect production rendering", () => {
+  const encoded = Buffer.from(JSON.stringify({ color: { boxWidth: 77, maxChars: 4 } }), "utf8").toString("base64");
+  const template = [
+    "^XA",
+    `^FX ${FIELD_FIT_DEFINITIONS_COMMENT_PREFIX}${encoded}`,
+    "^FO10,10^A0N,{{colorFontH}},{{colorFontW}}^FB{{colorBoxW}},{{colorMaxLines}},0,{{colorAlignment}},0^FD{{colorText}}^FS",
+    "^XZ"
+  ].join("\n");
+
+  const rendered = renderZplTemplateWithoutRfid(template, { color: "ULTRAMARINEBLUE" });
+  assert.match(rendered, /\^FB77,1,0,C,0\^FDULTR\^FS/);
+});
+
 test("conditional tolling blocks render only when tolling has a value", () => {
   const template = "^XA{{#if tolling}}^FO10,10^GB100,30,30^FS^FO10,10^A0N,20,20^FR^FD{{tollingText}}^FS{{/if}}^XZ";
   const blank = renderZplTemplateWithoutRfid(template, { tolling: "" });
@@ -232,11 +246,27 @@ test("template-only deploy script references required templates and copies only 
   const script = fs.readFileSync(scriptPath, "utf8");
   const requiredTemplates = [
     "RFID-RAW-P1.template.zpl",
+    "RFID-RAW-P2.template.zpl",
+    "RFID-RAW-P3.template.zpl",
+    "RFID-RAW-P4.template.zpl",
+    "RFID-RAW-P5.template.zpl",
+    "RFID-RAW-P6.template.zpl",
+    "RFID-RAW-P7.template.zpl",
+    "RFID-RAW-P8.template.zpl",
     "RFID-FG-P1.template.zpl",
+    "RFID-FG-P2.template.zpl",
     "RFID-FG-P3.template.zpl",
+    "RFID-FG-P4.template.zpl",
+    "RFID-FG-P5.template.zpl",
+    "RFID-FG-P6.template.zpl",
+    "RFID-FG-P7.template.zpl",
+    "RFID-FG-P8.template.zpl",
     "QCSample-P3.template.zpl",
+    "QCSample-P8.template.zpl",
     "QCRetain-P3.template.zpl",
-    "QCSamplePounds-P3.template.zpl"
+    "QCRetain-P8.template.zpl",
+    "QCSamplePounds-P3.template.zpl",
+    "QCSamplePounds-P8.template.zpl"
   ];
 
   for (const template of requiredTemplates) {
@@ -251,23 +281,26 @@ test("template-only deploy script references required templates and copies only 
 });
 
 test("RAW and FG repo templates render without unreplaced tokens", () => {
-  const rawTemplate = path.join(REPO_ROOT, "zpl", "RFID-RAW-P1.template.zpl");
-  const fgTemplates = [
-    path.join(REPO_ROOT, "zpl", "RFID-FG-P1.template.zpl"),
-    path.join(REPO_ROOT, "zpl", "RFID-FG-P3.template.zpl")
-  ];
+  const rawTemplates = Array.from({ length: 8 }, (_entry, index) =>
+    path.join(REPO_ROOT, "zpl", `RFID-RAW-P${index + 1}.template.zpl`)
+  );
+  const fgTemplates = Array.from({ length: 8 }, (_entry, index) =>
+    path.join(REPO_ROOT, "zpl", `RFID-FG-P${index + 1}.template.zpl`)
+  );
 
-  const raw = renderZplTemplateFile(rawTemplate, templateData());
-  assert.equal(/{{\s*[A-Za-z][A-Za-z0-9_]*\s*}}/.test(raw), false);
-  assertTemplateHasLotQr(rawTemplate, raw, "PT000086", 6);
-  assertTemplateCentersMaterialAndColor(rawTemplate);
-  assert.equal(raw.includes("^GFA,"), true);
-  assert.match(raw, /\^FB430,1,0,L,0\^FD/);
-  assert.equal(raw.includes("^GB340,73,73"), false);
-  assert.equal(raw.includes("~DGR:"), false);
-  assert.equal(raw.includes("^XGR:"), false);
-  assert.match(raw, /\^RFW,H,1,2,1\^FD3400\^FS/);
-  assert.match(raw, /\^RFW,H,2,12,1\^FD50543030303038362D423532\^FS/);
+  for (const rawTemplate of rawTemplates) {
+    const raw = renderZplTemplateFile(rawTemplate, templateData());
+    assert.equal(/{{\s*[A-Za-z][A-Za-z0-9_]*\s*}}/.test(raw), false);
+    assertTemplateHasLotQr(rawTemplate, raw, "PT000086", 6);
+    assertTemplateCentersMaterialAndColor(rawTemplate);
+    assert.equal(raw.includes("^GFA,"), true);
+    assert.match(raw, /\^FB430,1,0,L,0\^FD/);
+    assert.equal(raw.includes("^GB340,73,73"), false);
+    assert.equal(raw.includes("~DGR:"), false);
+    assert.equal(raw.includes("^XGR:"), false);
+    assert.match(raw, /\^RFW,H,1,2,1\^FD3400\^FS/);
+    assert.match(raw, /\^RFW,H,2,12,1\^FD50543030303038362D423532\^FS/);
+  }
 
   for (const fgTemplate of fgTemplates) {
     const fg = renderZplTemplateFile(fgTemplate, templateData());
@@ -283,15 +316,18 @@ test("RAW and FG repo templates render without unreplaced tokens", () => {
     assert.match(fg, /\^RFW,H,2,12,1\^FD50543030303038362D423532\^FS/);
   }
 
-  const rawWithTolling = renderZplTemplateFile(rawTemplate, templateData({ tolling: "TOLLING" }));
+  const rawWithTolling = renderZplTemplateFile(rawTemplates[0], templateData({ tolling: "TOLLING" }));
   assert.equal(rawWithTolling.includes("^GB340,73,73"), true);
 });
 
 test("P3 sample repo templates render without unreplaced tokens and do not encode RFID", () => {
   const templates = [
     path.join(REPO_ROOT, "zpl", "QCSample-P3.template.zpl"),
+    path.join(REPO_ROOT, "zpl", "QCSample-P8.template.zpl"),
     path.join(REPO_ROOT, "zpl", "QCRetain-P3.template.zpl"),
-    path.join(REPO_ROOT, "zpl", "QCSamplePounds-P3.template.zpl")
+    path.join(REPO_ROOT, "zpl", "QCRetain-P8.template.zpl"),
+    path.join(REPO_ROOT, "zpl", "QCSamplePounds-P3.template.zpl"),
+    path.join(REPO_ROOT, "zpl", "QCSamplePounds-P8.template.zpl")
   ];
   const data = {
     ...templateData({
@@ -320,10 +356,9 @@ test("P3 sample repo templates render without unreplaced tokens and do not encod
 });
 
 test("FG templates reject missing data and invalid RFID", () => {
-  const fgTemplates = [
-    path.join(REPO_ROOT, "zpl", "RFID-FG-P1.template.zpl"),
-    path.join(REPO_ROOT, "zpl", "RFID-FG-P3.template.zpl")
-  ];
+  const fgTemplates = Array.from({ length: 8 }, (_entry, index) =>
+    path.join(REPO_ROOT, "zpl", `RFID-FG-P${index + 1}.template.zpl`)
+  );
 
   for (const fgTemplate of fgTemplates) {
     assert.throws(

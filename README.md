@@ -42,7 +42,8 @@ It also includes a local-only Emergency Offline Printing mode. During an interne
 - `ZPL_BATCH_INTER_BATCH_DELAY_MS` - Delay between batch TCP streams when more labels remain queued after a batch. Default: `0`.
 - `ZPL_BATCH_MAX_BYTES` - Safety cap for one concatenated ZPL batch stream. Default: `524288`.
 - `ZPL_PREVIEW_RENDERER_URL` - Optional local ZPL image renderer endpoint for Template Lab previews. If unset or unavailable, Template Lab still returns rendered ZPL and metadata.
-- `ZPL_TEMPLATE_LAB_PROFILE_PATH` - Local JSON path for saved Template Lab tuning overrides. Default: `C:\PrintSvc\template-lab-profiles.json`.
+- `ZPL_TEMPLATE_SOURCE_DIR` - Source-of-truth directory for dynamic direct-ZPL `.template.zpl` files. Default: `C:\RFID\zpl`.
+- `ZPL_TEMPLATE_LAB_PROFILE_PATH` - Local JSON path for saved Template Lab tuning overrides. Default: `C:\RFID\zpl\template-lab-profiles.json`.
 
 ### File and path configuration
 - `PRINTSVC_CONFIG_DIR` - Directory containing `mappings.json`.
@@ -168,7 +169,7 @@ Local-only admin page used to log in and enable or disable emergency offline pri
 Local-only Print Health / QHealth dashboard. It reuses `/health`, `/api/print/zpl-queue`, and `/api/print/logs` to show direct-ZPL runtime settings, enabled scopes, printer queue cards, batch state, paused queues, review-required labels, recent errors, and searchable logs. It is read-only and does not change print behavior.
 
 ### `GET /offline/template-lab`
-Local-only Direct-ZPL Template Lab. It uses a two-column tuning workflow: controls and sample data on the left, preview image/metadata/debug/rendered ZPL on the right. It renders approved repo templates with sample data, shows QR/RFID/logo/payload/printer badges, exposes station/template calibration profiles, and provides browser controls for whole-label scale/offset, QR position/magnification, static-logo position/size, boxed field fit, product-description placement/fit, tolling behavior, and optional field anchor overrides. It can export/copy/download profile JSON, save lab-only profile overrides, download rendered ZPL, and send an explicitly confirmed proof print directly to a selected printer. Proof sends bypass the production direct-ZPL queue and do not mark queue items.
+Local-only Direct-ZPL Template Lab. It uses a two-column tuning workflow: controls and sample data on the left, preview image/metadata/debug/rendered ZPL on the right. It renders approved dynamic templates from `ZPL_TEMPLATE_SOURCE_DIR` with sample data, shows QR/RFID/logo/payload/printer badges, exposes station/template calibration profiles, and provides browser controls for whole-label scale/offset, QR position/magnification, static-logo position/size, boxed field fit, product-description placement/fit, tolling behavior, and optional field anchor overrides. It can export/copy/download profile JSON, save lab-only profile overrides, download rendered ZPL, promote token-preserving dynamic source changes with a backup, and send an explicitly confirmed proof print directly to a selected printer. Proof sends bypass the production direct-ZPL queue and do not mark queue items.
 
 ### `GET /api/offline/status`
 Local-only status endpoint. Returns the offline enabled/disabled state, build tag, max labels, max box number, allowed stations, template families, and current emergency reason. It does not expose secrets.
@@ -187,6 +188,12 @@ Local/admin-safe catalog endpoint for Template Lab. It returns the approved temp
 ### `POST /api/print/template-lab/profile`
 Local/admin-safe save endpoint for Template Lab tuning overrides. It writes lab-only profile JSON to `ZPL_TEMPLATE_LAB_PROFILE_PATH` and does not change production queue rendering, mappings, scopes, or print execution behavior.
 
+### `POST /api/print/template-lab/promote`
+Local/admin-safe promotion endpoint. It reads the approved dynamic `.template.zpl` from `ZPL_TEMPLATE_SOURCE_DIR`, applies Template Lab source-safe profile changes while preserving `{{...}}` tokens, rejects rendered/sample-tainted output, creates a `.bak-YYYYMMDD-HHMMSS` backup, and overwrites the dynamic production template.
+
+### `GET /api/print/zpl-template-validation`
+Local/admin-safe validation endpoint. It checks configured direct-ZPL templates for existence, dynamic tokens, and RAW/FG P1-P8 station-specific mapping mistakes.
+
 ### `GET|POST /api/print/template-preview`
 Local/admin-safe preview endpoint. It renders one approved direct-ZPL template using sample data and optional lab profile overrides, then returns rendered ZPL plus metadata: payload bytes, QR command and payload, RFID command presence, fitted-field debug, logo command presence, preview mode, unsupported approximate-preview commands, logo diagnostics, and the selected calibration profile. If `ZPL_PREVIEW_RENDERER_URL` is configured, PrintSvc attempts an external image preview request. If no external renderer is configured, or if the external renderer fails, PrintSvc returns a built-in approximate SVG preview for the ZPL subset used by the emergency templates.
 
@@ -197,8 +204,8 @@ Local/admin-safe proof-print endpoint. It requires `confirmTestPrint:true`, rend
 ### Print engines
 - `PRINT_ENGINE=bartender` is the normal rollback mode. It uses the existing BarTender Actions REST payload and the Windows printer/spooler path.
 - `PRINT_ENGINE=zpl` bypasses BarTender runtime and the Windows print spooler only for scopes listed in `DIRECT_ZPL_ENABLED_SCOPES`. The default is confirmed `P1:RAW`; emergency RAW and FG scopes are mapped for P1-P8, and P3 sample scopes are mapped for extrusion sample labels, but all remain inactive until listed. Any unlisted station/family is rejected with `UNSUPPORTED_DIRECT_ZPL` and logged as `direct_zpl_unsupported_skipped`.
-- Current RAW direct-ZPL mappings: `P1=192.168.50.239`, `P2=192.168.50.241`, `P3=192.168.50.223`, `P4=192.168.50.242`, `P5=192.168.50.244`, `P6=192.168.6.240`, `P7=192.168.8.200`, `P8=192.168.7.122`, port `9100`. RAW uses the shared emergency template `C:\RFID\zpl\RFID-RAW-P1.template.zpl` unless a station-specific ZPL template is configured.
-- Current FG direct-ZPL mappings use the same station printer IPs as RAW. `P1` uses `C:\RFID\zpl\RFID-FG-P1.template.zpl`; `P3` uses `C:\RFID\zpl\RFID-FG-P3.template.zpl`; `P2/P4/P5/P6/P7/P8` use `C:\RFID\zpl\RFID-FG-P1.template.zpl` as the emergency generic FG template until station-specific templates are created.
+- Current RAW direct-ZPL mappings: `P1=192.168.50.239`, `P2=192.168.50.241`, `P3=192.168.50.223`, `P4=192.168.50.242`, `P5=192.168.50.244`, `P6=192.168.6.240`, `P7=192.168.8.200`, `P8=192.168.7.122`, port `9100`. RAW maps to `C:\RFID\zpl\RFID-RAW-P1.template.zpl` through `RFID-RAW-P8.template.zpl`.
+- Current FG direct-ZPL mappings use the same station printer IPs as RAW and map to `C:\RFID\zpl\RFID-FG-P1.template.zpl` through `RFID-FG-P8.template.zpl`.
 - Current P3 sample direct-ZPL mappings use the Zebra ZT230 P3 EXT printer at `192.168.50.218:9100`: `P3:SAMPLE` maps to `C:\RFID\zpl\QCSample-P3.template.zpl`, `P3:RETAIN` maps to `C:\RFID\zpl\QCRetain-P3.template.zpl`, and `P3:SAMPLE_POUNDS` maps to `C:\RFID\zpl\QCSamplePounds-P3.template.zpl`. These sample/retain templates do not encode RFID unless explicitly added later; they are visible sample/retain labels only.
 - Direct-ZPL stores one persistent JSON queue record per box under `ZPL_QUEUE_DIR`, defaulting to `C:\PrintSvc\queue`. A PrintSvc worker sends records FIFO through a per-printer queue keyed by printer IP/port, replacing Windows Spooler for enabled direct-ZPL emergency scopes.
 - Direct-ZPL API responses return `ok:true`, `queued:true`, and `jobId`/`itemId` once a label is safely queued. That response does not mean the label physically printed.
@@ -220,7 +227,7 @@ Local/admin-safe proof-print endpoint. It requires `confirmTestPrint:true`, rend
 - If `PRINT_ENGINE=zpl` is selected and the station/family is unsupported or has no direct-ZPL printer/template mapping, PrintSvc returns a clear error instead of silently routing to a different printer.
 - Visible ZPL field values remove control characters plus `^` and `~`. To keep the emergency label bounded, visible fields are capped at: lot 24, box 8, RFID 12, pounds 12, material type 24, color 24, PO 32, product code 24, product name 48, product description 48, tolling 16, ERP 16, machine 32, company 48, label type 32, sample type 24, sample/frequency values 32, date 16, QR data 96. Boxed color/material/tolling fields use fitted direct-ZPL placeholders that render one centered line, shrink font by length, and truncate to 8 visible characters without adding hyphens or ellipses.
 - BarTender remains useful for layout and template authoring even when emergency direct-ZPL mode is active.
-- Emergency limitation: the current direct-ZPL templates are native-ZPL emergency layouts. RAW P1-P8 currently share the P1 emergency RAW template, and FG stations without station-specific templates use the P1 emergency FG template, so visual layout is generic and may not match each station's old BarTender template. P3 sample/retain templates are P3-only and based on available visual PRN proofs. Station-specific RAW, FG, and sample ZPL templates should be created later from printer-specific PRN proofs. The large BarTender PRN bitmap/graphics block is omitted, bitmap QR is not used, and a small static PRI logo is restored only in the RFID RAW/FG templates with inline `^GFA`. Native ZPL QR is included where practical and encodes the lot number only. Native barcodes from the FG PRNs are preserved where dynamic-safe; the old ERP barcode slot is used for the RFID text barcode in the emergency FG templates. FG-only fields that are not already resolved by PrintSvc render blank in the emergency template.
+- Emergency limitation: the current direct-ZPL templates are native-ZPL emergency layouts. RAW and FG now have station-named dynamic source files for P1-P8, but files cloned from an existing baseline should still be physically proofed and refined from printer-specific BarTender exports before broad rollout. The large BarTender PRN bitmap/graphics block is omitted, bitmap QR is not used, and a small static PRI logo is restored only in the RFID RAW/FG templates with inline `^GFA`. Native ZPL QR is included where practical and encodes the lot number only. Native barcodes from the FG PRNs are preserved where dynamic-safe; the old ERP barcode slot is used for the RFID text barcode in the emergency FG templates. FG-only fields that are not already resolved by PrintSvc render blank in the emergency template.
 - Tolling blocks are conditional in direct-ZPL templates: blank tolling suppresses the black box and reverse text; nonblank tolling renders the existing black/reversed field.
 - In dire need, operators may print small batches, but must watch for missing, delayed, duplicate, or out-of-order labels and verify RFID/EPC before retrying any unknown label.
 - Template Lab calibration profiles live in `lib/zplProfiles.js`, with local lab-only saved overrides in `ZPL_TEMPLATE_LAB_PROFILE_PATH`. These profiles expose `scaleX`, `scaleY`, `offsetX`, `offsetY`, label dimensions, field-fit overrides, product-description placement/fit, QR settings, logo placement/size, and optional field position overrides for preview/proof work. Production print rendering does not automatically apply these lab overrides; use the profiles to tune and document printer-specific coordinates before converting template changes into deployed templates or mappings.
@@ -235,7 +242,7 @@ For template-only visual updates after converting BarTender Print-to-File PRNs i
 Deploy-ZPL-Templates.bat
 ```
 
-The script validates the six required repo templates, creates `C:\RFID\zpl` if needed, copies only `.\zpl\*.template.zpl`, leaves PRN proofs and `.btw` files alone, restarts `RFID-PrintSvc-BarTender` only after a successful copy, then displays `/health` and `/api/print/zpl-queue`.
+The script validates the required station-specific repo templates, creates `C:\RFID\zpl` if needed, copies only `.\zpl\*.template.zpl`, leaves PRN proofs and `.btw` files alone, restarts `RFID-PrintSvc-BarTender` only after a successful copy, then displays `/health` and `/api/print/zpl-queue`.
 
 For local template preview without touching the production queue or restarting the service:
 
@@ -261,15 +268,11 @@ Copy-Item C:\PrintSvc\queue "C:\PrintSvc\queue.backup-$(Get-Date -Format yyyyMMd
 npm test
 New-Item -ItemType Directory -Force C:\RFID\zpl
 New-Item -ItemType Directory -Force C:\PrintSvc\queue
-Copy-Item .\zpl\RFID-RAW-P1.template.zpl C:\RFID\zpl\RFID-RAW-P1.template.zpl -Force
-Copy-Item .\zpl\RFID-FG-P1.template.zpl C:\RFID\zpl\RFID-FG-P1.template.zpl -Force
-Copy-Item .\zpl\RFID-FG-P3.template.zpl C:\RFID\zpl\RFID-FG-P3.template.zpl -Force
-Copy-Item .\zpl\QCSample-P3.template.zpl C:\RFID\zpl\QCSample-P3.template.zpl -Force
-Copy-Item .\zpl\QCRetain-P3.template.zpl C:\RFID\zpl\QCRetain-P3.template.zpl -Force
-Copy-Item .\zpl\QCSamplePounds-P3.template.zpl C:\RFID\zpl\QCSamplePounds-P3.template.zpl -Force
+Copy-Item .\zpl\*.template.zpl C:\RFID\zpl\ -Force
 Copy-Item .\mappings.json C:\PrintSvc\mappings.json -Force
 [Environment]::SetEnvironmentVariable("PRINT_ENGINE", "zpl", "Machine")
 [Environment]::SetEnvironmentVariable("DIRECT_ZPL_ENABLED_SCOPES", "P1:RAW,P2:RAW,P3:RAW,P4:RAW,P5:RAW,P6:RAW,P7:RAW,P8:RAW,P1:FG,P2:FG,P3:FG,P4:FG,P5:FG,P6:FG,P7:FG,P8:FG,P3:SAMPLE,P3:RETAIN,P3:SAMPLE_POUNDS", "Machine")
+[Environment]::SetEnvironmentVariable("ZPL_TEMPLATE_SOURCE_DIR", "C:\RFID\zpl", "Machine")
 [Environment]::SetEnvironmentVariable("ZPL_QUEUE_DIR", "C:\PrintSvc\queue", "Machine")
 [Environment]::SetEnvironmentVariable("ZPL_STALE_SENDING_THRESHOLD_MS", "120000", "Machine")
 [Environment]::SetEnvironmentVariable("ZPL_TCP_TIMEOUT_MS", "120000", "Machine")

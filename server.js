@@ -64,6 +64,7 @@ const {
   setAdminCookie
 } = require("./lib/offlineSecurity");
 const {
+  FIELD_FIT_DEFINITIONS_COMMENT_PREFIX,
   loadZplTemplate,
   getFittedFieldDefinitions,
   renderZplTemplateFile,
@@ -74,8 +75,16 @@ const {
   sendZplOverTcp
 } = require("./lib/zplPrinter");
 const {
+  FG_STATIONS,
+  QC_STATIONS,
+  RAW_STATIONS,
+  fgTemplateForStation,
   getStationProfile,
   getTemplateDefinition,
+  qcRetainTemplateForStation,
+  qcSamplePoundsTemplateForStation,
+  qcSampleTemplateForStation,
+  rawTemplateForStation,
   listStationProfiles,
   listTemplateLabTemplates
 } = require("./lib/zplProfiles");
@@ -85,8 +94,8 @@ const TEMPLATE_DIR = process.env.BARTENDER_TEMPLATE_DIR || "C:\\RFID";
 const mappingsPath = path.join(CONFIG_DIR, "mappings.json");
 const OFFLINE_PUBLIC_DIR = path.join(__dirname, "public", "offline");
 const OFFLINE_ASSETS_DIR = path.join(OFFLINE_PUBLIC_DIR, "assets");
-const ZPL_TEMPLATE_REPO_DIR = path.join(__dirname, "zpl");
-const ZPL_TEMPLATE_LAB_PROFILE_PATH = process.env.ZPL_TEMPLATE_LAB_PROFILE_PATH || path.join(CONFIG_DIR, "template-lab-profiles.json");
+const ZPL_TEMPLATE_SOURCE_DIR = process.env.ZPL_TEMPLATE_SOURCE_DIR || process.env.ZPL_TEMPLATE_DIR || "C:\\RFID\\zpl";
+const ZPL_TEMPLATE_LAB_PROFILE_PATH = process.env.ZPL_TEMPLATE_LAB_PROFILE_PATH || path.join(ZPL_TEMPLATE_SOURCE_DIR, "template-lab-profiles.json");
 const PRINTSVC_LOG_PATH = process.env.PRINTSVC_LOG_PATH || path.join(CONFIG_DIR, "logs", "printsvc-out.log");
 const PRINTSVC_LOG_TAIL_DEFAULT = 500;
 const PRINTSVC_LOG_TAIL_MAX = 5000;
@@ -115,30 +124,22 @@ const ZPL_BATCH_MAX_BYTES_DEFAULT = 512 * 1024;
 const ZPL_QUEUE_DIR = process.env.ZPL_QUEUE_DIR || path.join(CONFIG_DIR, "queue");
 const ZPL_STALE_SENDING_THRESHOLD_DEFAULT_MS = 2 * 60 * 1000;
 const DEFAULT_DIRECT_ZPL_ENABLED_SCOPES = "P1:RAW";
-const DEFAULT_DIRECT_ZPL_RAW_TEMPLATE_PATH = "C:\\RFID\\zpl\\RFID-RAW-P1.template.zpl";
-const DEFAULT_DIRECT_ZPL_FG_TEMPLATE_PATHS = Object.freeze({
-  P1: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
-  P2: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
-  P3: "C:\\RFID\\zpl\\RFID-FG-P3.template.zpl",
-  P4: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
-  P5: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
-  P6: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
-  P7: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
-  P8: "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl"
-});
+const DEFAULT_DIRECT_ZPL_RAW_TEMPLATE_PATHS = Object.freeze(Object.fromEntries(
+  RAW_STATIONS.map((station) => [station, path.join(ZPL_TEMPLATE_SOURCE_DIR, rawTemplateForStation(station))])
+));
+const DEFAULT_DIRECT_ZPL_FG_TEMPLATE_PATHS = Object.freeze(Object.fromEntries(
+  FG_STATIONS.map((station) => [station, path.join(ZPL_TEMPLATE_SOURCE_DIR, fgTemplateForStation(station))])
+));
 const DEFAULT_DIRECT_ZPL_SAMPLE_TEMPLATE_PATHS = Object.freeze({
-  SAMPLE: Object.freeze({
-    P3: "C:\\RFID\\zpl\\QCSample-P3.template.zpl",
-    P8: "C:\\RFID\\zpl\\QCSample-P8.template.zpl"
-  }),
-  RETAIN: Object.freeze({
-    P3: "C:\\RFID\\zpl\\QCRetain-P3.template.zpl",
-    P8: "C:\\RFID\\zpl\\QCRetain-P8.template.zpl"
-  }),
-  SAMPLE_POUNDS: Object.freeze({
-    P3: "C:\\RFID\\zpl\\QCSamplePounds-P3.template.zpl",
-    P8: "C:\\RFID\\zpl\\QCSamplePounds-P8.template.zpl"
-  })
+  SAMPLE: Object.freeze(Object.fromEntries(
+    QC_STATIONS.map((station) => [station, path.join(ZPL_TEMPLATE_SOURCE_DIR, qcSampleTemplateForStation(station))])
+  )),
+  RETAIN: Object.freeze(Object.fromEntries(
+    QC_STATIONS.map((station) => [station, path.join(ZPL_TEMPLATE_SOURCE_DIR, qcRetainTemplateForStation(station))])
+  )),
+  SAMPLE_POUNDS: Object.freeze(Object.fromEntries(
+    QC_STATIONS.map((station) => [station, path.join(ZPL_TEMPLATE_SOURCE_DIR, qcSamplePoundsTemplateForStation(station))])
+  ))
 });
 const DIRECT_ZPL_P3_SAMPLE_PRINTER_DEFAULT = Object.freeze({
   ip: "192.168.50.218",
@@ -435,10 +436,9 @@ function resolveZplTemplatePath(templateValue) {
   const raw = String(templateValue || "").trim();
   if (!raw) throw new Error("ZPL template mapping is blank.");
 
-  if (path.isAbsolute(raw) || path.win32.isAbsolute(raw)) return raw;
-
-  const zplTemplateDir = process.env.ZPL_TEMPLATE_DIR || path.join(TEMPLATE_DIR, "zpl");
-  return path.join(zplTemplateDir, raw);
+  const fileName = path.basename(path.win32.basename(raw));
+  if (!fileName) throw new Error("ZPL template mapping does not include a filename.");
+  return path.join(ZPL_TEMPLATE_SOURCE_DIR, fileName);
 }
 
 function getMappedPrinterForStation(station, usage, labelKind) {
@@ -579,7 +579,7 @@ function getDirectZplTemplateValue(directZpl, family, station, printerConfig = {
     printerConfig.templates?.[fam] ||
     (fam === "RAW" ? genericPrinterTemplate : "") ||
     (fam === "RAW" ? directZpl.templates?.RAW?.P1 : "") ||
-    (fam === "RAW" ? DEFAULT_DIRECT_ZPL_RAW_TEMPLATE_PATH : "") ||
+    (fam === "RAW" ? DEFAULT_DIRECT_ZPL_RAW_TEMPLATE_PATHS[st] : "") ||
     (fam === "FG" ? DEFAULT_DIRECT_ZPL_FG_TEMPLATE_PATHS[st] : "") ||
     (DEFAULT_DIRECT_ZPL_SAMPLE_TEMPLATE_PATHS[fam]?.[st] || "");
 }
@@ -4261,13 +4261,15 @@ function getTemplateLabCatalogPayload() {
     ok: true,
     templates: listTemplateLabTemplates(),
     profiles,
+    templateSourceDir: ZPL_TEMPLATE_SOURCE_DIR,
     profileConfigPath: ZPL_TEMPLATE_LAB_PROFILE_PATH,
     previewRendererConfigured: Boolean(trimString(process.env.ZPL_PREVIEW_RENDERER_URL))
   };
 }
 
 function normalizeTemplateLabTemplateName(value) {
-  const name = path.basename(trimString(value));
+  const raw = trimString(value);
+  const name = path.basename(path.win32.basename(raw));
   if (!name) throw httpError(400, "VALIDATION_ERROR", "template is required.");
   const definition = getTemplateDefinition(name);
   if (!definition) {
@@ -4276,7 +4278,7 @@ function normalizeTemplateLabTemplateName(value) {
       supportedTemplates: listTemplateLabTemplates().map((template) => template.name)
     });
   }
-  return { name, definition, templatePath: path.join(ZPL_TEMPLATE_REPO_DIR, name) };
+  return { name, definition, templatePath: path.join(ZPL_TEMPLATE_SOURCE_DIR, name) };
 }
 
 function buildTemplateLabData(input = {}, templateDefinition = {}) {
@@ -4470,6 +4472,276 @@ function applyTemplateLabRenderedOverrides(renderedZpl, profile = {}) {
   return output;
 }
 
+const DYNAMIC_ZPL_TOKEN_PATTERN = /{{\s*[A-Za-z][A-Za-z0-9_]*\s*}}/g;
+const TEMPLATE_LAB_SAMPLE_VALUE_PATTERNS = Object.freeze([
+  Object.freeze({ label: "PT000086", pattern: /PT000086/ }),
+  Object.freeze({ label: "Template Lab Product", pattern: /Template Lab Product/ }),
+  Object.freeze({ label: "PROOF", pattern: /\bPROOF\b/ }),
+  Object.freeze({ label: "PT000086-Bxx", pattern: /PT000086-B\d{2}/ }),
+  Object.freeze({ label: "PO12345", pattern: /\bPO12345\b/ }),
+  Object.freeze({ label: "PROD001", pattern: /\bPROD001\b/ }),
+  Object.freeze({ label: "ULTRAMARINEBLUE", pattern: /ULTRAMARINEBLUE/ }),
+  Object.freeze({ label: "POLYPROPYLENE", pattern: /POLYPROPYLENE/ })
+]);
+
+function collectDynamicZplTokens(zpl) {
+  return Array.from(new Set(Array.from(String(zpl || "").matchAll(DYNAMIC_ZPL_TOKEN_PATTERN), (match) => match[0]))).sort();
+}
+
+function hasDynamicZplTokens(zpl) {
+  return collectDynamicZplTokens(zpl).length > 0;
+}
+
+function findTemplateLabSampleValues(zpl) {
+  const text = String(zpl || "");
+  return TEMPLATE_LAB_SAMPLE_VALUE_PATTERNS
+    .filter((entry) => entry.pattern.test(text))
+    .map((entry) => entry.label);
+}
+
+function applyFieldFitDefinitionsToTemplateSource(source, fieldFitDefinitions = {}) {
+  let output = String(source || "");
+  for (const field of ["color", "colorSmall", "materialType", "materialTypeSmall", "tolling", "productDescription"]) {
+    if (!isPlainObject(fieldFitDefinitions[field])) continue;
+    const fieldTokenPattern = new RegExp(`\\^FB[^\\^\\r\\n]*\\^FD\\{\\{\\s*${field}Text\\s*\\}\\}`, "g");
+    output = output.replace(
+      fieldTokenPattern,
+      `^FB{{${field}BoxW}},{{${field}MaxLines}},0,{{${field}Alignment}},0^FD{{${field}Text}}`
+    );
+  }
+  return output;
+}
+
+function templateLabFieldFitCommentPattern() {
+  const escapedPrefix = FIELD_FIT_DEFINITIONS_COMMENT_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\^FX\\s*${escapedPrefix}[A-Za-z0-9+/=]+\\r?\\n?`, "g");
+}
+
+function upsertTemplateFieldFitDefinitionsComment(source, fieldFitDefinitions = {}) {
+  const cleanSource = String(source || "").replace(templateLabFieldFitCommentPattern(), "");
+  if (!isPlainObject(fieldFitDefinitions) || Object.keys(fieldFitDefinitions).length === 0) return cleanSource;
+
+  const encoded = Buffer.from(JSON.stringify(fieldFitDefinitions), "utf8").toString("base64");
+  const comment = `^FX ${FIELD_FIT_DEFINITIONS_COMMENT_PREFIX}${encoded}\n`;
+  const lastLabelEnd = cleanSource.lastIndexOf("^XZ");
+  if (lastLabelEnd < 0) return `${cleanSource.replace(/\s+$/, "")}\n${comment}`;
+  return `${cleanSource.slice(0, lastLabelEnd)}${comment}${cleanSource.slice(lastLabelEnd)}`;
+}
+
+function applyTemplateLabDynamicSourceOverrides(sourceTemplate, profile = {}) {
+  let output = applyFieldPositionOverridesToTemplateSource(sourceTemplate, profile?.fieldPositionOverrides || {});
+  output = applyGlobalTemplateLabTransform(output, profile);
+  output = applyQrOverrideToRenderedZpl(output, profile);
+  output = applyLogoOverrideToRenderedZpl(output, profile);
+  output = applyFieldFitDefinitionsToTemplateSource(output, profile?.fieldFitDefinitions || {});
+  output = upsertTemplateFieldFitDefinitionsComment(output, profile?.fieldFitDefinitions || {});
+  return output;
+}
+
+function formatTemplateBackupTimestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    "-",
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds())
+  ].join("");
+}
+
+function promoteTemplateLabDynamicTemplate(body = {}) {
+  const selected = normalizeTemplateLabTemplateName(body.template || body.templateName);
+  const profileKey = trimString(body.profileKey || body.profile || selected.definition.defaultProfileKey).toUpperCase();
+  const inlineOverrides = buildProfileOverridesFromInput(body);
+  const profile = buildEffectiveTemplateLabProfile(profileKey, selected.definition.defaultProfileKey, inlineOverrides);
+  if (!profile) {
+    throw httpError(400, "UNSUPPORTED_TEMPLATE_LAB_PROFILE", "Template Lab can only promote approved station/template profiles.", {
+      profileKey,
+      supportedProfiles: listStationProfiles().map((item) => item.key)
+    });
+  }
+
+  const sourceTemplate = loadZplTemplate(selected.templatePath);
+  if (!hasDynamicZplTokens(sourceTemplate)) {
+    throw httpError(400, "DYNAMIC_TEMPLATE_REQUIRED", "Production promotion requires a dynamic .template.zpl source with {{...}} tokens.", {
+      template: selected.name,
+      templatePath: selected.templatePath
+    });
+  }
+
+  const updatedTemplate = applyTemplateLabDynamicSourceOverrides(sourceTemplate, profile);
+  const remainingTokens = collectDynamicZplTokens(updatedTemplate);
+  if (remainingTokens.length === 0) {
+    throw httpError(400, "DYNAMIC_TEMPLATE_TOKENS_MISSING", "Promotion rejected because the updated template has no {{...}} tokens.", {
+      template: selected.name,
+      templatePath: selected.templatePath
+    });
+  }
+
+  const sampleValues = findTemplateLabSampleValues(updatedTemplate);
+  if (sampleValues.length) {
+    throw httpError(400, "LAB_SAMPLE_VALUES_IN_TEMPLATE", "Promotion rejected because the updated template appears to contain Template Lab sample data.", {
+      template: selected.name,
+      templatePath: selected.templatePath,
+      sampleValues
+    });
+  }
+
+  fs.mkdirSync(path.dirname(selected.templatePath), { recursive: true });
+  const backupPath = `${selected.templatePath}.bak-${formatTemplateBackupTimestamp()}`;
+  fs.copyFileSync(selected.templatePath, backupPath);
+  fs.writeFileSync(selected.templatePath, updatedTemplate, "utf8");
+
+  logInfo("template_lab_dynamic_template_promoted", {
+    template: selected.name,
+    profileKey: profile.key,
+    templatePath: selected.templatePath,
+    backupPath,
+    tokenCount: remainingTokens.length
+  });
+
+  return {
+    ok: true,
+    template: selected.name,
+    profileKey: profile.key,
+    templatePath: selected.templatePath,
+    backupPath,
+    tokenCount: remainingTokens.length,
+    tokens: remainingTokens,
+    bytes: Buffer.byteLength(updatedTemplate, "utf8"),
+    message: "Dynamic template promoted to production source. Rendered proof ZPL was not saved."
+  };
+}
+
+function expectedTemplateNameForFamilyStation(family, station) {
+  const fam = normalizeDirectZplScopeFamily(family);
+  const st = String(station || "").trim().toUpperCase();
+  if (fam === "RAW") return rawTemplateForStation(st);
+  if (fam === "FG") return fgTemplateForStation(st);
+  if (fam === "SAMPLE") return qcSampleTemplateForStation(st);
+  if (fam === "RETAIN") return qcRetainTemplateForStation(st);
+  if (fam === "SAMPLE_POUNDS") return qcSamplePoundsTemplateForStation(st);
+  return "";
+}
+
+function addGroupedStationIssue(group, family, station, details) {
+  const fam = normalizeDirectZplScopeFamily(family);
+  const st = String(station || "").trim().toUpperCase();
+  group[fam] = group[fam] || {};
+  group[fam][st] = details;
+}
+
+function isSharedTemplateExplicitlyAllowed(directZpl, family, station, actualFileName) {
+  const fam = normalizeDirectZplScopeFamily(family);
+  const st = String(station || "").trim().toUpperCase();
+  if (directZpl.allowTemplateFallbacks?.[fam]?.[st] === true) return true;
+
+  const configured = directZpl.allowedSharedTemplates?.[fam]?.[st] ||
+    directZpl.allowSharedTemplates?.[fam]?.[st] ||
+    directZpl.explicitSharedTemplates?.[fam]?.[st];
+  if (configured === true) return true;
+  const values = Array.isArray(configured) ? configured : configured ? [configured] : [];
+  return values.some((value) => path.basename(path.win32.basename(String(value || ""))) === actualFileName);
+}
+
+function listDirectZplTemplateValidationTargets(directZpl = getDirectZplConfig()) {
+  const byKey = new Map();
+  const add = (family, station) => {
+    const fam = normalizeDirectZplScopeFamily(family);
+    const st = String(station || "").trim().toUpperCase();
+    if (!fam || !st) return;
+    byKey.set(`${fam}:${st}`, { family: fam, station: st });
+  };
+
+  for (const station of RAW_STATIONS) add("RAW", station);
+  for (const station of FG_STATIONS) add("FG", station);
+
+  for (const [family, stationMap] of Object.entries(directZpl.templates || {})) {
+    if (!isPlainObject(stationMap)) continue;
+    for (const station of Object.keys(stationMap)) add(family, station);
+  }
+
+  return Array.from(byKey.values()).sort((a, b) => `${a.family}:${a.station}`.localeCompare(`${b.family}:${b.station}`));
+}
+
+function validateDirectZplTemplates() {
+  const directZpl = getDirectZplConfig();
+  const targets = listDirectZplTemplateValidationTargets(directZpl);
+  const missingTemplates = {};
+  const tokenlessTemplates = {};
+  const wrongStationMappings = [];
+  const checkedTemplates = [];
+
+  for (const target of targets) {
+    const printerConfig = getDirectZplPrinterConfig(directZpl, target.station, target.family) || {};
+    const templateValue = getDirectZplTemplateValue(directZpl, target.family, target.station, printerConfig);
+    const templatePath = templateValue ? resolveZplTemplatePath(templateValue) : "";
+    const expectedFileName = expectedTemplateNameForFamilyStation(target.family, target.station);
+    const actualFileName = templatePath ? path.basename(templatePath) : "";
+    const check = {
+      family: target.family,
+      station: target.station,
+      templateValue,
+      templatePath,
+      expectedFileName,
+      actualFileName,
+      exists: false,
+      tokenCount: 0,
+      tokens: []
+    };
+
+    if (!templatePath || !fs.existsSync(templatePath)) {
+      addGroupedStationIssue(missingTemplates, target.family, target.station, {
+        templatePath,
+        expectedFileName,
+        configuredValue: templateValue || null
+      });
+      checkedTemplates.push(check);
+      continue;
+    }
+
+    check.exists = true;
+    const sourceTemplate = fs.readFileSync(templatePath, "utf8");
+    check.tokens = collectDynamicZplTokens(sourceTemplate);
+    check.tokenCount = check.tokens.length;
+    if (check.tokenCount === 0) {
+      addGroupedStationIssue(tokenlessTemplates, target.family, target.station, {
+        templatePath,
+        expectedFileName,
+        configuredValue: templateValue || null
+      });
+    }
+
+    if (["RAW", "FG"].includes(target.family) && expectedFileName && actualFileName !== expectedFileName && !isSharedTemplateExplicitlyAllowed(directZpl, target.family, target.station, actualFileName)) {
+      wrongStationMappings.push({
+        family: target.family,
+        station: target.station,
+        templatePath,
+        actualFileName,
+        expectedFileName,
+        message: `${target.family} ${target.station} maps to ${actualFileName}; expected ${expectedFileName} unless explicitly allowed.`
+      });
+    }
+
+    checkedTemplates.push(check);
+  }
+
+  const missingCount = Object.values(missingTemplates).reduce((count, familyGroup) => count + Object.keys(familyGroup).length, 0);
+  const tokenlessCount = Object.values(tokenlessTemplates).reduce((count, familyGroup) => count + Object.keys(familyGroup).length, 0);
+
+  return {
+    ok: missingCount === 0 && tokenlessCount === 0 && wrongStationMappings.length === 0,
+    templateSourceDir: ZPL_TEMPLATE_SOURCE_DIR,
+    checkedCount: checkedTemplates.length,
+    missingTemplates,
+    tokenlessTemplates,
+    wrongStationMappings,
+    checkedTemplates
+  };
+}
+
 function escapeXml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -4527,7 +4799,7 @@ function buildApproximateZplPreview(renderedZpl, profile = {}) {
   let labelHeight = Number(profile?.labelHeightDots) || 1218;
   const elements = [];
   const unsupported = new Set();
-  const supportedOrIgnored = new Set(["XA", "XZ", "RS", "RR", "SZ", "JM", "MC", "PM", "JS", "JZ", "LH", "LR", "CI", "PW", "FO", "FT", "GB", "A0", "FB", "FD", "FS", "FR", "BQ", "B3", "BY", "GF", "PQ", "RF"]);
+  const supportedOrIgnored = new Set(["XA", "XZ", "FX", "RS", "RR", "SZ", "JM", "MC", "PM", "JS", "JZ", "LH", "LR", "CI", "PW", "FO", "FT", "GB", "A0", "FB", "FD", "FS", "FR", "BQ", "B3", "BY", "GF", "PQ", "RF"]);
   const state = {
     x: 0,
     y: 0,
@@ -6223,6 +6495,24 @@ app.post("/api/print/template-lab/profile", requireOfflineLocalAccess, (req, res
   }
 });
 
+app.post("/api/print/template-lab/promote", requireOfflineLocalAccess, (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(promoteTemplateLabDynamicTemplate(req.body || {}));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_LAB_PROMOTE_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
+app.get("/api/print/zpl-template-validation", requireOfflineLocalAccess, (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(validateDirectZplTemplates());
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "ZPL_TEMPLATE_VALIDATION_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
 app.get("/api/print/template-preview", requireOfflineLocalAccess, async (req, res) => {
   try {
     res.setHeader("Cache-Control", "no-store");
@@ -7618,6 +7908,7 @@ module.exports = {
   getZplQueueStatusPayload,
   getZplPersistentSocketStatusForAll,
   getTemplateLabCatalogPayload,
+  promoteTemplateLabDynamicTemplate,
   saveTemplateLabProfileOverrides,
   isQueueItemSafeToRetry,
   markRecentZplSendAccepted,
@@ -7639,6 +7930,7 @@ module.exports = {
   setDirectZplQueueSendFunction,
   setTemplateTestSendFunction,
   setZplSocketFactoryForTests,
+  validateDirectZplTemplates,
   resetZplSocketFactoryForTests,
   startAllZplQueueWorkers,
   startZplQueueWorkerForPrinter

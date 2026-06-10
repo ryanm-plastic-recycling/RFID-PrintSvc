@@ -1,0 +1,71 @@
+^XA
+^RS,,,3,N,,,2
+^RR10
+^XZ
+^XA
+^SZ2^JMA
+^MCY^PMN
+^PW870
+~JSN
+^JZY
+^LH0,0^LRN
+^XZ
+^XA
+^FX P3 QC Sample Pounds template based on C:\RFID\zpl\QCSamplePounds-P3-visual-proof.prn. Bitmap block omitted; native QR uses PRN graphic origin and encodes lot only; no RFID encode commands in proof.
+^FO640,5
+^BQN,2,5^FDLA,{{lotNumber}}^FS
+^FO244,166
+^CI0
+^A0N,{{productDescriptionFontH}},{{productDescriptionFontW}}^FB{{productDescriptionBoxW}},{{productDescriptionMaxLines}},0,{{productDescriptionAlignment}},0^FD{{productDescriptionText}}^FS
+^FO236,157
+^GB380,49,4^FS
+{{#if tolling}}
+^FO291,59
+^GB138,31,31^FS
+^FT291,86
+^A0N,{{tollingFontH}},{{tollingFontW}}^FR^FB138,1,0,C,0^FD{{tollingText}}^FS
+{{/if}}
+^FO153,238
+^A0N,{{colorSmallFontH}},{{colorSmallFontW}}^FB119,1,0,C,0^FD{{colorSmallText}}^FS
+^FO153,225
+^GB119,118,4^FS
+^FT76,128
+^A0N,38,51^FD{{lotNumber}}^FS
+^FO28,90
+^GB290,49,4^FS
+^FT106,195
+^A0N,38,51^FD{{frequencyCheck}}^FS
+^FO30,157
+^GB201,49,4^FS
+^FT30,155
+^A0N,13,18^FDFREQUENCY CHECK^FS
+^FT155,224
+^A0N,13,18^FDCOLOR^FS
+^FT28,88
+^A0N,13,18^FDLOT^FS
+^FT241,155
+^A0N,13,18^FDPRODUCT DESCRIPTION^FS
+^FT370,130
+^A0N,38,51^FD{{machine}}^FS
+^FO327,92
+^GB289,48,4^FS
+^FT327,90
+^A0N,13,18^FDMACHINE^FS
+^FO228,17
+^GB371,38,38^FS
+^FT228,49
+^A0N,38,32^FR^FD QUALITY CONTROL SAMPLE ^FS
+^FO30,245
+^A0N,{{materialTypeSmallFontH}},{{materialTypeSmallFontW}}^FB118,1,0,C,0^FD{{materialTypeSmallText}}^FS
+^FO30,225
+^GB118,118,4^FS
+^FT30,224
+^A0N,13,18^FDMATERIAL^FS
+^FT450,83
+^A0N,21,28^FD{{printedDate}}^FS
+^FT276,224
+^A0N,13,18^FDSAMPLE TIME^FS
+^FO276,225
+^GB180,121,4^FS
+^PQ1,0,1,Y
+^XZ

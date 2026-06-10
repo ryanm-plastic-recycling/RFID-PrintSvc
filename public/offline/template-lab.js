@@ -9,6 +9,7 @@
   var loadProfileButton = document.getElementById("loadProfileButton");
   var exportProfileButton = document.getElementById("exportProfileButton");
   var saveProfileButton = document.getElementById("saveProfileButton");
+  var promoteTemplateButton = document.getElementById("promoteTemplateButton");
   var copyProfileButton = document.getElementById("copyProfileButton");
   var downloadProfileButton = document.getElementById("downloadProfileButton");
   var templateSelect = document.getElementById("template");
@@ -31,6 +32,7 @@
   var fieldFitControls = document.getElementById("fieldFitControls");
   var profileJson = document.getElementById("profileJson");
   var profileSaveResult = document.getElementById("profileSaveResult");
+  var promoteTemplateResult = document.getElementById("promoteTemplateResult");
   var rangePairs = [
     ["scaleX", "scaleXRange"],
     ["scaleY", "scaleYRange"],
@@ -539,6 +541,29 @@
     }
   }
 
+  async function promoteDynamicTemplate() {
+    var exported = exportProfileJson();
+    if (!window.confirm("Promote the selected dynamic template to production? A backup will be created before overwrite.")) return;
+    promoteTemplateButton.disabled = true;
+    if (promoteTemplateResult) promoteTemplateResult.textContent = "Promoting dynamic template...";
+    try {
+      var result = await postJson("/api/print/template-lab/promote", {
+        template: templateSelect.value,
+        profileKey: exported.profileKey,
+        profileOverrides: exported.overrides
+      });
+      if (promoteTemplateResult) {
+        promoteTemplateResult.textContent = "Promoted " + result.templatePath + " (backup: " + result.backupPath + ")";
+      }
+      setStatus(true, "Dynamic Template Promoted", "Production source template was updated with dynamic tokens preserved.");
+    } catch (error) {
+      if (promoteTemplateResult) promoteTemplateResult.textContent = error.message;
+      setStatus(false, "Promotion Failed", error.message);
+    } finally {
+      promoteTemplateButton.disabled = false;
+    }
+  }
+
   async function copyProfileJson() {
     exportProfileJson();
     try {
@@ -601,6 +626,7 @@
   loadProfileButton.addEventListener("click", loadSelectedProfileValues);
   exportProfileButton.addEventListener("click", exportProfileJson);
   saveProfileButton.addEventListener("click", saveProfile);
+  if (promoteTemplateButton) promoteTemplateButton.addEventListener("click", promoteDynamicTemplate);
   if (copyProfileButton) copyProfileButton.addEventListener("click", copyProfileJson);
   if (downloadProfileButton) downloadProfileButton.addEventListener("click", downloadProfileJson);
 

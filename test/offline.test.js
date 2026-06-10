@@ -19,6 +19,11 @@ let queueDir;
 let logFile;
 let bartenderRequests = [];
 let serverModule;
+const REPO_ROOT = path.resolve(__dirname, "..");
+
+function zplTemplatePath(name) {
+  return path.join(process.env.ZPL_TEMPLATE_SOURCE_DIR || path.join(REPO_ROOT, "zpl"), name);
+}
 
 function listen(server, host = "127.0.0.1") {
   return new Promise((resolve) => {
@@ -172,6 +177,8 @@ test.before(async () => {
   auditFile = path.join(tempDir, "offline-audit.ndjson");
   queueDir = path.join(tempDir, "zpl-queue");
   logFile = path.join(tempDir, "logs", "printsvc-out.log");
+  const zplSourceDir = path.join(tempDir, "zpl-source");
+  fs.cpSync(path.join(REPO_ROOT, "zpl"), zplSourceDir, { recursive: true });
 
   bartenderServer = http.createServer((req, res) => {
     if (req.method !== "POST") {
@@ -206,6 +213,7 @@ test.before(async () => {
   process.env.OFFLINE_PRINT_STATE_FILE = stateFile;
   process.env.OFFLINE_PRINT_AUDIT_FILE = auditFile;
   process.env.PRINTSVC_LOG_PATH = logFile;
+  process.env.ZPL_TEMPLATE_SOURCE_DIR = zplSourceDir;
   process.env.ZPL_TEMPLATE_LAB_PROFILE_PATH = path.join(tempDir, "template-lab-profiles.json");
   process.env.OFFLINE_PRINT_MAX_LABELS = "3";
   process.env.OFFLINE_PRINT_MAX_BOX_NUMBER = "5";
@@ -213,6 +221,7 @@ test.before(async () => {
   process.env.PRINT_JOB_SPACING_MS = "0";
   process.env.ZPL_QUEUE_DIR = queueDir;
   delete process.env.PRINT_ENGINE;
+  delete process.env.DIRECT_ZPL_ENABLED_SCOPES;
   delete process.env.ZPL_DUPLICATE_POLICY;
   delete process.env.ZPL_SOCKET_MODE;
   delete process.env.ZPL_MAX_LABELS_PER_CONNECTION;
@@ -406,6 +415,7 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.text.includes("Visual Tuning"), true);
   assert.equal(result.text.includes("Export Profile JSON"), true);
   assert.equal(result.text.includes("Copy JSON"), true);
+  assert.equal(result.text.includes("Promote Dynamic Template to Production"), true);
   assert.equal(result.text.includes("H = font height dots"), true);
   assert.equal(result.text.includes("Product Description & Field Origins"), true);
   assert.equal(result.text.includes("zpl-preview-frame"), true);
@@ -413,8 +423,12 @@ test("template lab page, preview, and test send stay outside production queue", 
 
   result = await request("GET", "/api/print/template-lab/catalog");
   assert.equal(result.status, 200);
+  assert.equal(result.json.templateSourceDir, process.env.ZPL_TEMPLATE_SOURCE_DIR);
   assert.equal(result.json.templates.some((template) => template.name === "RFID-RAW-P1.template.zpl"), true);
+  assert.equal(result.json.templates.some((template) => template.name === "RFID-RAW-P8.template.zpl"), true);
+  assert.equal(result.json.templates.some((template) => template.name === "RFID-FG-P8.template.zpl"), true);
   assert.equal(result.json.profiles.some((profile) => profile.key === "P1:RAW"), true);
+  assert.equal(result.json.profiles.some((profile) => profile.key === "P8:FG"), true);
 
   const previewBody = {
     template: "RFID-RAW-P1.template.zpl",
@@ -498,6 +512,45 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(savedProfile.qr.magnification, 8);
   assert.equal(savedProfile.effectiveFieldFitDefinitions.materialType.boxWidth, 333);
 
+  result = await request("GET", "/api/print/zpl-template-validation");
+  assert.equal(result.status, 200);
+  assert.equal(result.json.ok, true);
+  assert.deepEqual(result.json.missingTemplates, {});
+  assert.deepEqual(result.json.wrongStationMappings, []);
+
+  const taintedTemplatePath = zplTemplatePath("RFID-RAW-P2.template.zpl");
+  const taintedOriginal = fs.readFileSync(taintedTemplatePath, "utf8");
+  fs.writeFileSync(taintedTemplatePath, `${taintedOriginal}\n^FDPT000086^FS\n`, "utf8");
+  result = await request("POST", "/api/print/template-lab/promote", {
+    body: { template: "RFID-RAW-P2.template.zpl", profileKey: "P2:RAW" }
+  });
+  fs.writeFileSync(taintedTemplatePath, taintedOriginal, "utf8");
+  assert.equal(result.status, 400);
+  assert.equal(result.json.error, "LAB_SAMPLE_VALUES_IN_TEMPLATE");
+
+  const promoteTemplatePath = zplTemplatePath("RFID-RAW-P1.template.zpl");
+  result = await request("POST", "/api/print/template-lab/promote", {
+    body: {
+      template: "RFID-RAW-P1.template.zpl",
+      profileKey: "P1:RAW",
+      profileOverrides: {
+        qr: { x: 130, y: 240, magnification: 9 },
+        fieldFitDefinitions: { color: { boxWidth: 111, maxChars: 5 } }
+      }
+    }
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.json.ok, true);
+  assert.equal(result.json.templatePath, promoteTemplatePath);
+  assert.equal(fs.existsSync(result.json.backupPath), true);
+  const promotedSource = fs.readFileSync(promoteTemplatePath, "utf8");
+  assert.equal(promotedSource.includes("PT000086"), false);
+  assert.equal(promotedSource.includes("Template Lab Product"), false);
+  assert.equal(promotedSource.includes("{{lotNumber}}"), true);
+  assert.equal(promotedSource.includes("^FO130,240\n^BQN,2,9^FDLA,{{lotNumber}}^FS"), true);
+  assert.equal(promotedSource.includes("TEMPLATE_LAB_FIELD_FIT_DEFINITIONS_BASE64:"), true);
+  assert.equal(promotedSource.includes("^FB{{colorBoxW}},{{colorMaxLines}},0,{{colorAlignment}},0^FD{{colorText}}"), true);
+
   result = await request("POST", "/api/print/template-test-send", {
     body: { ...previewBody, printerIp: "127.0.0.1", port: 9100 }
   });
@@ -549,7 +602,7 @@ test("print engine routing keeps BarTender default and resolves direct ZPL when 
     assert.equal(target.family, "RAW");
     assert.equal(target.zpl.printerIp, "192.168.50.239");
     assert.equal(target.zpl.port, 9100);
-    assert.equal(target.zpl.templatePath, "C:\\RFID\\zpl\\RFID-RAW-P1.template.zpl");
+    assert.equal(target.zpl.templatePath, zplTemplatePath("RFID-RAW-P1.template.zpl"));
 
     assert.throws(
       () => serverModule.resolveRfidPrintTarget({ station: "P2", lotNumber: "PT000086" }),
@@ -596,7 +649,7 @@ test("DIRECT_ZPL_ENABLED_SCOPES controls all RAW stations", () => {
       assert.equal(target.family, "RAW");
       assert.equal(target.zpl.printerIp, printerIp);
       assert.equal(target.zpl.port, 9100);
-      assert.equal(target.zpl.templatePath, "C:\\RFID\\zpl\\RFID-RAW-P1.template.zpl");
+      assert.equal(target.zpl.templatePath, zplTemplatePath(`RFID-RAW-${station}.template.zpl`));
     }
 
     assert.throws(
@@ -623,14 +676,14 @@ test("DIRECT_ZPL_ENABLED_SCOPES controls all FG stations", () => {
   const previousPrintEngine = process.env.PRINT_ENGINE;
   const previousScopes = process.env.DIRECT_ZPL_ENABLED_SCOPES;
   const fgStations = [
-    ["P1", "192.168.50.239", "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl"],
-    ["P2", "192.168.50.241", "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl"],
-    ["P3", "192.168.50.223", "C:\\RFID\\zpl\\RFID-FG-P3.template.zpl"],
-    ["P4", "192.168.50.242", "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl"],
-    ["P5", "192.168.50.244", "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl"],
-    ["P6", "192.168.6.240", "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl"],
-    ["P7", "192.168.8.200", "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl"],
-    ["P8", "192.168.7.122", "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl"]
+    ["P1", "192.168.50.239", zplTemplatePath("RFID-FG-P1.template.zpl")],
+    ["P2", "192.168.50.241", zplTemplatePath("RFID-FG-P2.template.zpl")],
+    ["P3", "192.168.50.223", zplTemplatePath("RFID-FG-P3.template.zpl")],
+    ["P4", "192.168.50.242", zplTemplatePath("RFID-FG-P4.template.zpl")],
+    ["P5", "192.168.50.244", zplTemplatePath("RFID-FG-P5.template.zpl")],
+    ["P6", "192.168.6.240", zplTemplatePath("RFID-FG-P6.template.zpl")],
+    ["P7", "192.168.8.200", zplTemplatePath("RFID-FG-P7.template.zpl")],
+    ["P8", "192.168.7.122", zplTemplatePath("RFID-FG-P8.template.zpl")]
   ];
 
   try {
@@ -640,7 +693,7 @@ test("DIRECT_ZPL_ENABLED_SCOPES controls all FG stations", () => {
     const rawTarget = serverModule.resolveRfidPrintTarget({ station: "P1", lotNumber: "PT000086" });
     assert.equal(rawTarget.family, "RAW");
     assert.equal(rawTarget.zpl.printerIp, "192.168.50.239");
-    assert.equal(rawTarget.zpl.templatePath, "C:\\RFID\\zpl\\RFID-RAW-P1.template.zpl");
+    assert.equal(rawTarget.zpl.templatePath, zplTemplatePath("RFID-RAW-P1.template.zpl"));
 
     for (const [station] of fgStations) {
       assert.throws(
@@ -694,7 +747,7 @@ test("P3 sample direct ZPL scopes are explicit and P3-only", () => {
     assert.equal(sampleTarget.zpl.printerName, "Zebra ZT230 P3 EXT");
     assert.equal(sampleTarget.zpl.printerIp, "192.168.50.218");
     assert.equal(sampleTarget.zpl.port, 9100);
-    assert.equal(sampleTarget.zpl.templatePath, "C:\\RFID\\zpl\\QCSample-P3.template.zpl");
+    assert.equal(sampleTarget.zpl.templatePath, zplTemplatePath("QCSample-P3.template.zpl"));
 
     const retainTarget = serverModule.resolveSamplePrintTarget({ station: "P3", labelKind: "retain" });
     assert.equal(retainTarget.labelKind, "QCRetain");
@@ -702,7 +755,7 @@ test("P3 sample direct ZPL scopes are explicit and P3-only", () => {
     assert.equal(retainTarget.zpl.printerName, "Zebra ZT230 P3 EXT");
     assert.equal(retainTarget.zpl.printerIp, "192.168.50.218");
     assert.equal(retainTarget.zpl.port, 9100);
-    assert.equal(retainTarget.zpl.templatePath, "C:\\RFID\\zpl\\QCRetain-P3.template.zpl");
+    assert.equal(retainTarget.zpl.templatePath, zplTemplatePath("QCRetain-P3.template.zpl"));
 
     const poundsTarget = serverModule.resolveSamplePrintTarget({ station: "P3", labelKind: "qc", byPounds: true });
     assert.equal(poundsTarget.labelKind, "QCSample");
@@ -710,7 +763,7 @@ test("P3 sample direct ZPL scopes are explicit and P3-only", () => {
     assert.equal(poundsTarget.zpl.printerName, "Zebra ZT230 P3 EXT");
     assert.equal(poundsTarget.zpl.printerIp, "192.168.50.218");
     assert.equal(poundsTarget.zpl.port, 9100);
-    assert.equal(poundsTarget.zpl.templatePath, "C:\\RFID\\zpl\\QCSamplePounds-P3.template.zpl");
+    assert.equal(poundsTarget.zpl.templatePath, zplTemplatePath("QCSamplePounds-P3.template.zpl"));
 
     assert.deepEqual(serverModule.getDirectZplEnabledScopes(), [
       { station: "P3", family: "SAMPLE" },
@@ -723,13 +776,13 @@ test("P3 sample direct ZPL scopes are explicit and P3-only", () => {
     assert.equal(rawTarget.family, "RAW");
     assert.equal(rawTarget.zpl.printerIp, "192.168.50.223");
     assert.equal(rawTarget.zpl.port, 9100);
-    assert.equal(rawTarget.zpl.templatePath, "C:\\RFID\\zpl\\RFID-RAW-P1.template.zpl");
+    assert.equal(rawTarget.zpl.templatePath, zplTemplatePath("RFID-RAW-P3.template.zpl"));
 
     const fgTarget = serverModule.resolveRfidPrintTarget({ station: "P3", lotNumber: "PL123456" });
     assert.equal(fgTarget.family, "FG");
     assert.equal(fgTarget.zpl.printerIp, "192.168.50.223");
     assert.equal(fgTarget.zpl.port, 9100);
-    assert.equal(fgTarget.zpl.templatePath, "C:\\RFID\\zpl\\RFID-FG-P3.template.zpl");
+    assert.equal(fgTarget.zpl.templatePath, zplTemplatePath("RFID-FG-P3.template.zpl"));
 
     assert.throws(
       () => serverModule.resolveSamplePrintTarget({ station: "P2", labelKind: "sample" }),

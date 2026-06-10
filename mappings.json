@@ -164,17 +164,24 @@
     },
     "templates": {
       "RAW": {
-        "P1": "C:\\RFID\\zpl\\RFID-RAW-P1.template.zpl"
+        "P1": "C:\\RFID\\zpl\\RFID-RAW-P1.template.zpl",
+        "P2": "C:\\RFID\\zpl\\RFID-RAW-P2.template.zpl",
+        "P3": "C:\\RFID\\zpl\\RFID-RAW-P3.template.zpl",
+        "P4": "C:\\RFID\\zpl\\RFID-RAW-P4.template.zpl",
+        "P5": "C:\\RFID\\zpl\\RFID-RAW-P5.template.zpl",
+        "P6": "C:\\RFID\\zpl\\RFID-RAW-P6.template.zpl",
+        "P7": "C:\\RFID\\zpl\\RFID-RAW-P7.template.zpl",
+        "P8": "C:\\RFID\\zpl\\RFID-RAW-P8.template.zpl"
       },
       "FG": {
         "P1": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
-        "P2": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
+        "P2": "C:\\RFID\\zpl\\RFID-FG-P2.template.zpl",
         "P3": "C:\\RFID\\zpl\\RFID-FG-P3.template.zpl",
-        "P4": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
-        "P5": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
-        "P6": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
-        "P7": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl",
-        "P8": "C:\\RFID\\zpl\\RFID-FG-P1.template.zpl"
+        "P4": "C:\\RFID\\zpl\\RFID-FG-P4.template.zpl",
+        "P5": "C:\\RFID\\zpl\\RFID-FG-P5.template.zpl",
+        "P6": "C:\\RFID\\zpl\\RFID-FG-P6.template.zpl",
+        "P7": "C:\\RFID\\zpl\\RFID-FG-P7.template.zpl",
+        "P8": "C:\\RFID\\zpl\\RFID-FG-P8.template.zpl"
       },
       "SAMPLE": {
         "P3": "C:\\RFID\\zpl\\QCSample-P3.template.zpl",

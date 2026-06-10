@@ -204,6 +204,16 @@ button.secondary {
   color: var(--pri-blue);
 }
 
+button.danger {
+  background: #9f1d2d;
+  border-color: #9f1d2d;
+}
+
+button.danger:hover:not(:disabled) {
+  background: #7c1322;
+  border-color: #7c1322;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
