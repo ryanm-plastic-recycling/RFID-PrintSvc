@@ -55,6 +55,7 @@ const fs = require("fs");
 const net = require("net");
 const path = require("path");
 const multer = require("multer");
+const zlib = require("zlib");
 const { appendOfflineAuditEvent, readLatestOfflineAuditEvents } = require("./lib/offlineAudit");
 const { readOfflineState, writeOfflineState } = require("./lib/offlineState");
 const {
@@ -96,6 +97,7 @@ const OFFLINE_PUBLIC_DIR = path.join(__dirname, "public", "offline");
 const OFFLINE_ASSETS_DIR = path.join(OFFLINE_PUBLIC_DIR, "assets");
 const ZPL_TEMPLATE_SOURCE_DIR = process.env.ZPL_TEMPLATE_SOURCE_DIR || process.env.ZPL_TEMPLATE_DIR || "C:\\RFID\\zpl";
 const ZPL_TEMPLATE_LAB_PROFILE_PATH = process.env.ZPL_TEMPLATE_LAB_PROFILE_PATH || path.join(ZPL_TEMPLATE_SOURCE_DIR, "template-lab-profiles.json");
+const ZPL_TEMPLATE_LAB_ASSET_DIR = process.env.ZPL_TEMPLATE_LAB_ASSET_DIR || path.join(ZPL_TEMPLATE_SOURCE_DIR, "assets");
 const PRINTSVC_LOG_PATH = process.env.PRINTSVC_LOG_PATH || path.join(CONFIG_DIR, "logs", "printsvc-out.log");
 const PRINTSVC_LOG_TAIL_DEFAULT = 500;
 const PRINTSVC_LOG_TAIL_MAX = 5000;
@@ -4164,11 +4166,29 @@ function setIfNumber(target, key, value, options = {}) {
   if (number !== undefined) target[key] = number;
 }
 
+function booleanFromInput(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "boolean") return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  return undefined;
+}
+
+function setIfBoolean(target, key, value) {
+  const bool = booleanFromInput(value);
+  if (bool !== undefined) target[key] = bool;
+}
+
 function buildFieldFitOverrideFromInput(input = {}, prefix) {
   const output = {};
   setIfNumber(output, "boxWidth", input[`${prefix}BoxWidth`], { min: 1, integer: true });
+  setIfNumber(output, "boxHeight", input[`${prefix}BoxHeight`], { min: 1, integer: true });
+  setIfNumber(output, "fontHeight", input[`${prefix}FontHeight`], { min: 1, integer: true });
+  setIfNumber(output, "fontWidth", input[`${prefix}FontWidth`], { min: 1, integer: true });
   setIfNumber(output, "maxChars", input[`${prefix}MaxChars`], { min: 1, integer: true });
   setIfNumber(output, "maxLines", input[`${prefix}MaxLines`], { min: 1, max: 6, integer: true });
+  setIfNumber(output, "borderThickness", input[`${prefix}BorderThickness`], { min: 0, max: 20, integer: true });
   const alignment = trimString(input[`${prefix}Alignment`]).toUpperCase();
   if (["L", "C", "R", "J"].includes(alignment)) output.alignment = alignment;
   for (const tier of ["large", "medium", "small", "min"]) {
@@ -4183,10 +4203,22 @@ function buildFieldFitOverrideFromInput(input = {}, prefix) {
 
 function buildProfileOverridesFromInput(input = {}) {
   const overrides = deepCloneJson(parseJsonObjectField(input.profileOverrides, "profileOverrides"));
+  setIfNumber(overrides, "labelWidthDots", input.labelWidthDots, { min: 1, max: 10000, integer: true });
+  setIfNumber(overrides, "labelHeightDots", input.labelHeightDots, { min: 1, max: 10000, integer: true });
+  setIfNumber(overrides, "globalScaleX", input.globalScaleX ?? input.scaleX, { min: 0.1, max: 5 });
+  setIfNumber(overrides, "globalScaleY", input.globalScaleY ?? input.scaleY, { min: 0.1, max: 5 });
+  setIfNumber(overrides, "globalOffsetX", input.globalOffsetX ?? input.offsetX, { min: -5000, max: 5000, integer: true });
+  setIfNumber(overrides, "globalOffsetY", input.globalOffsetY ?? input.offsetY, { min: -5000, max: 5000, integer: true });
   setIfNumber(overrides, "scaleX", input.scaleX, { min: 0.1, max: 5 });
   setIfNumber(overrides, "scaleY", input.scaleY, { min: 0.1, max: 5 });
   setIfNumber(overrides, "offsetX", input.offsetX, { min: -5000, max: 5000, integer: true });
   setIfNumber(overrides, "offsetY", input.offsetY, { min: -5000, max: 5000, integer: true });
+  setIfNumber(overrides, "labelHomeX", input.labelHomeX, { min: -5000, max: 5000, integer: true });
+  setIfNumber(overrides, "labelHomeY", input.labelHomeY, { min: -5000, max: 5000, integer: true });
+  setIfNumber(overrides, "labelShiftX", input.labelShiftX, { min: -5000, max: 5000, integer: true });
+  setIfNumber(overrides, "labelShiftY", input.labelShiftY, { min: -5000, max: 5000, integer: true });
+  setIfNumber(overrides, "borderThickness", input.borderThickness, { min: 0, max: 20, integer: true });
+  setIfBoolean(overrides, "scaleBorderThickness", input.scaleBorderThickness);
 
   const qr = {};
   setIfNumber(qr, "x", input.qrX, { min: -5000, max: 5000, integer: true });
@@ -4200,6 +4232,13 @@ function buildProfileOverridesFromInput(input = {}) {
   setIfNumber(logo, "scale", input.logoScale, { min: 0.25, max: 6 });
   setIfNumber(logo, "widthDots", input.logoWidthDots, { min: 1, max: 2000, integer: true });
   setIfNumber(logo, "heightDots", input.logoHeightDots, { min: 1, max: 2000, integer: true });
+  setIfNumber(logo, "threshold", input.logoThreshold, { min: 0, max: 255, integer: true });
+  const logoDithering = trimString(input.logoDithering).toLowerCase();
+  if (["none", "ordered"].includes(logoDithering)) logo.dithering = logoDithering;
+  const logoAssetName = trimString(input.logoAssetName || input.logoAsset);
+  if (logoAssetName) logo.assetName = logoAssetName;
+  const logoGfa = trimString(input.logoGfa || input.logoGFA);
+  if (logoGfa && /^\^GFA,/i.test(logoGfa)) logo.gfa = logoGfa;
   if (Object.keys(logo).length) overrides.logo = deepMergePlainObjects(overrides.logo || {}, logo);
 
   const fieldFitDefinitions = {};
@@ -4222,12 +4261,47 @@ function buildProfileOverridesFromInput(input = {}) {
     overrides.fieldPositionOverrides = deepMergePlainObjects(overrides.fieldPositionOverrides || {}, fieldPositionOverrides);
   }
 
+  const fieldGeometryOverrides = parseJsonObjectField(input.fieldGeometryOverrides, "fieldGeometryOverrides");
+  if (Object.keys(fieldGeometryOverrides).length) {
+    overrides.fieldGeometryOverrides = deepMergePlainObjects(overrides.fieldGeometryOverrides || {}, fieldGeometryOverrides);
+  }
+
   return overrides;
 }
 
 function getSavedTemplateLabProfileOverrides(profileKey) {
   const config = readTemplateLabProfileConfig();
   return deepCloneJson(config.profiles?.[String(profileKey || "").toUpperCase()] || {});
+}
+
+function normalizeTemplateLabProfileGeometry(profile = {}) {
+  const normalized = { ...profile };
+  const scaleX = numberFromInput(normalized.globalScaleX, { min: 0.1, max: 5 }) ??
+    numberFromInput(normalized.scaleX, { min: 0.1, max: 5 }) ?? 1;
+  const scaleY = numberFromInput(normalized.globalScaleY, { min: 0.1, max: 5 }) ??
+    numberFromInput(normalized.scaleY, { min: 0.1, max: 5 }) ?? 1;
+  const offsetX = numberFromInput(normalized.globalOffsetX, { min: -5000, max: 5000, integer: true }) ??
+    numberFromInput(normalized.offsetX, { min: -5000, max: 5000, integer: true }) ?? 0;
+  const offsetY = numberFromInput(normalized.globalOffsetY, { min: -5000, max: 5000, integer: true }) ??
+    numberFromInput(normalized.offsetY, { min: -5000, max: 5000, integer: true }) ?? 0;
+
+  normalized.globalScaleX = scaleX;
+  normalized.globalScaleY = scaleY;
+  normalized.globalOffsetX = offsetX;
+  normalized.globalOffsetY = offsetY;
+  normalized.scaleX = scaleX;
+  normalized.scaleY = scaleY;
+  normalized.offsetX = offsetX;
+  normalized.offsetY = offsetY;
+  normalized.labelWidthDots = numberFromInput(normalized.labelWidthDots, { min: 1, max: 10000, integer: true }) || 812;
+  normalized.labelHeightDots = numberFromInput(normalized.labelHeightDots, { min: 1, max: 10000, integer: true }) || 1218;
+  normalized.labelHomeX = numberFromInput(normalized.labelHomeX, { min: -5000, max: 5000, integer: true });
+  normalized.labelHomeY = numberFromInput(normalized.labelHomeY, { min: -5000, max: 5000, integer: true });
+  normalized.labelShiftX = numberFromInput(normalized.labelShiftX, { min: -5000, max: 5000, integer: true });
+  normalized.labelShiftY = numberFromInput(normalized.labelShiftY, { min: -5000, max: 5000, integer: true });
+  normalized.borderThickness = numberFromInput(normalized.borderThickness, { min: 0, max: 20, integer: true });
+  normalized.scaleBorderThickness = Boolean(normalized.scaleBorderThickness);
+  return normalized;
 }
 
 function buildEffectiveTemplateLabProfile(profileKey, fallbackProfileKey, inlineOverrides = {}) {
@@ -4242,6 +4316,7 @@ function buildEffectiveTemplateLabProfile(profileKey, fallbackProfileKey, inline
   merged.labOnly = true;
   merged.savedOverrides = savedOverrides;
   merged.inlineOverrides = inlineOverrides;
+  Object.assign(merged, normalizeTemplateLabProfileGeometry(merged));
   merged.effectiveFieldFitDefinitions = getFittedFieldDefinitions(merged.fieldFitDefinitions || {});
   return merged;
 }
@@ -4263,6 +4338,7 @@ function getTemplateLabCatalogPayload() {
     profiles,
     templateSourceDir: ZPL_TEMPLATE_SOURCE_DIR,
     profileConfigPath: ZPL_TEMPLATE_LAB_PROFILE_PATH,
+    logoAssetDir: ZPL_TEMPLATE_LAB_ASSET_DIR,
     previewRendererConfigured: Boolean(trimString(process.env.ZPL_PREVIEW_RENDERER_URL))
   };
 }
@@ -4279,6 +4355,375 @@ function normalizeTemplateLabTemplateName(value) {
     });
   }
   return { name, definition, templatePath: path.join(ZPL_TEMPLATE_SOURCE_DIR, name) };
+}
+
+function parseTemplateLabFieldFitDefinitionsFromSource(source) {
+  const pattern = templateLabFieldFitCommentPattern();
+  const matches = Array.from(String(source || "").matchAll(pattern));
+  if (!matches.length) return {};
+
+  const lastMatch = matches[matches.length - 1][0];
+  const encoded = lastMatch
+    .replace(new RegExp(`^\\^FX\\s*${FIELD_FIT_DEFINITIONS_COMMENT_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), "")
+    .trim();
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+    return isPlainObject(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseZplTemplateCommandsWithPositions(zpl) {
+  const text = String(zpl || "");
+  const commands = [];
+  let index = 0;
+  while (index < text.length) {
+    const start = text.slice(index).search(/[\^~]/);
+    if (start < 0) break;
+    const absoluteStart = index + start;
+    const prefix = text[absoluteStart];
+    const code = text.slice(absoluteStart + 1, absoluteStart + 3);
+    if (code.length < 2) break;
+    let next = absoluteStart + 3;
+    while (next < text.length && text[next] !== "^" && text[next] !== "~") next += 1;
+    const paramsStart = absoluteStart + 3;
+    const raw = text.slice(absoluteStart, next);
+    commands.push({
+      prefix,
+      code,
+      params: text.slice(paramsStart, next).replace(/\r?\n/g, ""),
+      raw,
+      start: absoluteStart,
+      end: next,
+      paramsStart,
+      paramsEnd: next
+    });
+    index = next;
+  }
+  return commands;
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function zplParamParts(value) {
+  return String(value || "").split(",").map((part) => part.trim());
+}
+
+function parseFontCommand(command) {
+  if (!command || command.code !== "A0") return null;
+  const parts = zplParamParts(command.params);
+  return {
+    command: `^${command.code}`,
+    orientation: parts[0] || "N",
+    fontHeight: numberOrNull(parts[1]),
+    fontWidth: numberOrNull(parts[2]),
+    fontHeightRaw: parts[1] || "",
+    fontWidthRaw: parts[2] || "",
+    commandStart: command.start,
+    commandEnd: command.end,
+    raw: command.raw
+  };
+}
+
+function parseFieldBlockCommand(command) {
+  if (!command || command.code !== "FB") return null;
+  const parts = zplParamParts(command.params);
+  return {
+    width: numberOrNull(parts[0]),
+    maxLines: numberOrNull(parts[1]),
+    lineSpacing: numberOrNull(parts[2]),
+    alignment: (parts[3] || "L").toUpperCase(),
+    hangingIndent: numberOrNull(parts[4]),
+    widthRaw: parts[0] || "",
+    maxLinesRaw: parts[1] || "",
+    lineSpacingRaw: parts[2] || "",
+    alignmentRaw: parts[3] || "",
+    hangingIndentRaw: parts[4] || "",
+    commandStart: command.start,
+    commandEnd: command.end,
+    raw: command.raw
+  };
+}
+
+function parsePositionCommand(command) {
+  if (!command || !["FO", "FT"].includes(command.code)) return null;
+  const parts = zplParamParts(command.params);
+  return {
+    command: command.code,
+    x: numberOrNull(parts[0]),
+    y: numberOrNull(parts[1]),
+    xRaw: parts[0] || "",
+    yRaw: parts[1] || "",
+    commandStart: command.start,
+    commandEnd: command.end,
+    raw: command.raw
+  };
+}
+
+function parseGraphicBoxCommand(command, position) {
+  if (!command || command.code !== "GB") return null;
+  const parts = zplParamParts(command.params);
+  return {
+    x: position?.x ?? null,
+    y: position?.y ?? null,
+    originCommand: position?.command || null,
+    width: numberOrNull(parts[0]),
+    height: numberOrNull(parts[1]),
+    thickness: numberOrNull(parts[2]),
+    color: parts[3] || "",
+    rounding: numberOrNull(parts[4]),
+    commandStart: command.start,
+    commandEnd: command.end,
+    raw: command.raw
+  };
+}
+
+function conditionalRangesForTemplate(source) {
+  const ranges = [];
+  const stack = [];
+  const pattern = /{{\s*(#if\s+([A-Za-z][A-Za-z0-9_]*)|\/if)\s*}}/g;
+  for (const match of String(source || "").matchAll(pattern)) {
+    const full = match[1] || "";
+    if (full.startsWith("#if")) {
+      stack.push({ field: match[2], start: match.index, open: match[0] });
+    } else {
+      const opened = stack.pop();
+      if (opened) ranges.push({ ...opened, end: match.index + match[0].length, close: match[0] });
+    }
+  }
+  return ranges;
+}
+
+function conditionalForIndex(ranges, index) {
+  const containing = ranges
+    .filter((range) => range.start <= index && range.end >= index)
+    .sort((a, b) => (b.end - b.start) - (a.end - a.start));
+  return containing[0] || null;
+}
+
+function tokenNameFromFieldToken(value) {
+  const match = String(value || "").match(/{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}/);
+  return match ? match[1] : "";
+}
+
+function fittedFieldKeyFromToken(tokenName) {
+  return String(tokenName || "").endsWith("Text")
+    ? String(tokenName).slice(0, -"Text".length)
+    : "";
+}
+
+function resolveFieldFitNumeric(fieldFitDefinitions, fieldKey, property, fallback) {
+  if (!fieldKey) return fallback;
+  const definition = fieldFitDefinitions?.[fieldKey] || {};
+  if (Number.isFinite(definition[property])) return definition[property];
+  if (property === "fontHeight") {
+    return Number(definition.small?.fontH ?? definition.medium?.fontH ?? definition.large?.fontH ?? definition.min?.fontH) || fallback;
+  }
+  if (property === "fontWidth") {
+    return Number(definition.small?.fontW ?? definition.medium?.fontW ?? definition.large?.fontW ?? definition.min?.fontW) || fallback;
+  }
+  if (property === "fieldWidth") return Number(definition.boxWidth) || fallback;
+  if (property === "maxLines") return Number(definition.maxLines) || fallback;
+  return fallback;
+}
+
+function resolveFieldFitAlignment(fieldFitDefinitions, fieldKey, fallback) {
+  if (!fieldKey) return fallback;
+  return fieldFitDefinitions?.[fieldKey]?.alignment || fallback;
+}
+
+function mergeStagedGeometryIntoParsedGeometry(parsedGeometry, savedProfileOverrides = {}) {
+  const staged = savedProfileOverrides.fieldGeometryOverrides || {};
+  const output = deepCloneJson(parsedGeometry);
+  output.fields = output.fields.map((field) => ({
+    ...field,
+    staged: isPlainObject(staged[field.tokenName]) ? staged[field.tokenName] : null
+  }));
+  output.qr = { ...(output.qr || {}), staged: savedProfileOverrides.qr || null };
+  output.logo = { ...(output.logo || {}), staged: savedProfileOverrides.logo || null };
+  output.label = { ...(output.label || {}), staged: {
+    labelWidthDots: savedProfileOverrides.labelWidthDots,
+    labelHeightDots: savedProfileOverrides.labelHeightDots,
+    labelHomeX: savedProfileOverrides.labelHomeX,
+    labelHomeY: savedProfileOverrides.labelHomeY
+  }};
+  return output;
+}
+
+function parseTemplateLabSourceGeometry(sourceTemplate, options = {}) {
+  const source = String(sourceTemplate || "");
+  const commands = parseZplTemplateCommandsWithPositions(source);
+  const conditionalRanges = conditionalRangesForTemplate(source);
+  const sourceFieldFitDefinitions = getFittedFieldDefinitions(parseTemplateLabFieldFitDefinitionsFromSource(source));
+  const warnings = [];
+  const fields = [];
+  const borders = [];
+  const label = {
+    labelWidthDots: null,
+    labelHeightDots: null,
+    labelHomeX: null,
+    labelHomeY: null,
+    labelShiftX: null,
+    labelShiftY: null,
+    printQuantity: null
+  };
+  let activePosition = null;
+  let activeFont = null;
+  let activeFieldBlock = null;
+  let qr = null;
+  let logo = null;
+
+  for (let index = 0; index < commands.length; index += 1) {
+    const command = commands[index];
+    if (command.code === "PW") label.labelWidthDots = numberOrNull(command.params);
+    else if (command.code === "LL") label.labelHeightDots = numberOrNull(command.params);
+    else if (command.code === "LH") {
+      const parts = zplParamParts(command.params);
+      label.labelHomeX = numberOrNull(parts[0]);
+      label.labelHomeY = numberOrNull(parts[1]);
+    } else if (command.code === "LS") {
+      label.labelShiftX = numberOrNull(command.params);
+    } else if (command.code === "LT") {
+      label.labelShiftY = numberOrNull(command.params);
+    } else if (command.code === "PQ") {
+      label.printQuantity = numberOrNull(zplParamParts(command.params)[0]);
+    } else if (["FO", "FT"].includes(command.code)) {
+      activePosition = parsePositionCommand(command);
+    } else if (command.code === "A0") {
+      activeFont = parseFontCommand(command);
+    } else if (command.code === "FB") {
+      activeFieldBlock = parseFieldBlockCommand(command);
+    } else if (command.code === "GB") {
+      const border = parseGraphicBoxCommand(command, activePosition);
+      if (border) borders.push(border);
+    } else if (command.code === "BQ") {
+      const nextFd = commands.slice(index + 1).find((item) => item.code === "FD" || item.code === "FS");
+      const parts = zplParamParts(command.params);
+      if (nextFd?.code === "FD" && /{{\s*lotNumber\s*}}|LA,\s*{{/i.test(nextFd.params)) {
+        qr = {
+          x: activePosition?.x ?? null,
+          y: activePosition?.y ?? null,
+          originCommand: activePosition?.command || "FO",
+          magnification: numberOrNull(parts[2]),
+          model: parts[1] || "",
+          payload: nextFd.params,
+          commandStart: activePosition?.commandStart ?? command.start,
+          commandEnd: nextFd.end,
+          raw: source.slice(activePosition?.commandStart ?? command.start, nextFd.end)
+        };
+      }
+    } else if (command.code === "GF") {
+      const metrics = getGfaCommandMetrics(command.raw);
+      logo = {
+        x: activePosition?.x ?? null,
+        y: activePosition?.y ?? null,
+        originCommand: activePosition?.command || "FO",
+        widthDots: metrics?.width || null,
+        heightDots: metrics?.height || null,
+        payloadBytes: metrics?.payloadBytes || null,
+        commandStart: activePosition?.commandStart ?? command.start,
+        commandEnd: command.end,
+        raw: source.slice(activePosition?.commandStart ?? command.start, command.end)
+      };
+    } else if (command.code === "FD") {
+      const tokenMatches = Array.from(command.params.matchAll(/{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}/g));
+      for (const tokenMatch of tokenMatches) {
+        const tokenName = tokenMatch[1];
+        const fieldKey = fittedFieldKeyFromToken(tokenName);
+        const conditional = conditionalForIndex(conditionalRanges, command.paramsStart + tokenMatch.index);
+        const fontHeight = activeFont?.fontHeight ?? resolveFieldFitNumeric(sourceFieldFitDefinitions, fieldKey, "fontHeight", null);
+        const fontWidth = activeFont?.fontWidth ?? resolveFieldFitNumeric(sourceFieldFitDefinitions, fieldKey, "fontWidth", null);
+        const fieldWidth = activeFieldBlock?.width ?? resolveFieldFitNumeric(sourceFieldFitDefinitions, fieldKey, "fieldWidth", null);
+        const maxLines = activeFieldBlock?.maxLines ?? resolveFieldFitNumeric(sourceFieldFitDefinitions, fieldKey, "maxLines", null);
+        const alignment = activeFieldBlock?.alignment || resolveFieldFitAlignment(sourceFieldFitDefinitions, fieldKey, null);
+        const field = {
+          fieldKey: fieldKey || tokenName,
+          tokenName,
+          token: tokenMatch[0],
+          originCommand: activePosition?.command || null,
+          x: activePosition?.x ?? null,
+          y: activePosition?.y ?? null,
+          fontHeight,
+          fontWidth,
+          fontHeightRaw: activeFont?.fontHeightRaw || "",
+          fontWidthRaw: activeFont?.fontWidthRaw || "",
+          fieldWidth,
+          maxLines,
+          lineSpacing: activeFieldBlock?.lineSpacing ?? null,
+          alignment,
+          fieldWidthRaw: activeFieldBlock?.widthRaw || "",
+          maxLinesRaw: activeFieldBlock?.maxLinesRaw || "",
+          conditional: conditional ? { field: conditional.field, start: conditional.start, end: conditional.end } : null,
+          commandStart: activePosition?.commandStart ?? command.start,
+          commandEnd: command.end,
+          rawSegment: source.slice(Math.max(0, (activePosition?.commandStart ?? command.start) - 80), Math.min(source.length, command.end + 120)),
+          source: "template"
+        };
+        if (!activePosition) warnings.push({ tokenName, message: `No preceding ^FO/^FT found for {{${tokenName}}}.` });
+        if (!activeFont) warnings.push({ tokenName, message: `No active ^A0 font found for {{${tokenName}}}.` });
+        fields.push(field);
+      }
+    } else if (command.code === "FS") {
+      activeFieldBlock = null;
+    }
+  }
+
+  for (const field of fields) {
+    const related = borders
+      .filter((border) => Math.abs(border.commandStart - field.commandStart) <= 260 || Math.abs(border.commandStart - field.commandEnd) <= 260)
+      .sort((a, b) => Math.min(Math.abs(a.commandStart - field.commandStart), Math.abs(a.commandStart - field.commandEnd)) -
+        Math.min(Math.abs(b.commandStart - field.commandStart), Math.abs(b.commandStart - field.commandEnd)))[0];
+    field.border = related ? {
+      x: related.x,
+      y: related.y,
+      width: related.width,
+      height: related.height,
+      thickness: related.thickness,
+      commandStart: related.commandStart,
+      raw: related.raw
+    } : null;
+  }
+
+  return {
+    label,
+    fields,
+    qr,
+    logo,
+    borders,
+    warnings,
+    sourceFieldFitDefinitions,
+    parsedAt: isoNow(),
+    parser: "template-source-v1",
+    ...options
+  };
+}
+
+function getTemplateLabTemplateGeometryPayload(input = {}) {
+  const selected = normalizeTemplateLabTemplateName(input.template || input.templateName);
+  const profileKey = trimString(input.profileKey || input.profile || selected.definition.defaultProfileKey).toUpperCase();
+  const sourceTemplate = loadZplTemplate(selected.templatePath);
+  const savedProfileOverrides = getSavedTemplateLabProfileOverrides(profileKey);
+  const parsed = parseTemplateLabSourceGeometry(sourceTemplate);
+  const merged = mergeStagedGeometryIntoParsedGeometry(parsed, savedProfileOverrides);
+  return {
+    ok: true,
+    templateName: selected.name,
+    templatePath: selected.templatePath,
+    profileKey,
+    parsedAt: parsed.parsedAt,
+    fields: merged.fields,
+    qr: merged.qr,
+    logo: merged.logo,
+    borders: merged.borders,
+    label: merged.label,
+    savedProfileOverrides,
+    warnings: merged.warnings,
+    sourceFieldFitDefinitions: merged.sourceFieldFitDefinitions
+  };
 }
 
 function buildTemplateLabData(input = {}, templateDefinition = {}) {
@@ -4344,34 +4789,276 @@ function applyFieldPositionOverridesToTemplateSource(templateText, fieldPosition
   return output;
 }
 
+function sourceWindowAroundToken(source, tokenName, before = 420, after = 220) {
+  const text = String(source || "");
+  const pattern = new RegExp(`\\{\\{\\s*${String(tokenName || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\}\\}`, "g");
+  const matches = Array.from(text.matchAll(pattern));
+  if (!matches.length) return null;
+  const match = matches.find((candidate) => {
+    const preceding = text.slice(Math.max(0, candidate.index - 140), candidate.index);
+    return !/\^BQ|\^RF/.test(preceding);
+  }) || matches[0];
+  return {
+    tokenIndex: match.index,
+    start: Math.max(0, match.index - before),
+    end: Math.min(text.length, match.index + match[0].length + after)
+  };
+}
+
+function replaceLastInSlice(text, sliceStart, sliceEnd, pattern, replacer) {
+  const source = String(text || "");
+  const slice = source.slice(sliceStart, sliceEnd);
+  const matches = Array.from(slice.matchAll(pattern));
+  if (!matches.length) return source;
+  const match = matches[matches.length - 1];
+  const absoluteStart = sliceStart + match.index;
+  const absoluteEnd = absoluteStart + match[0].length;
+  return `${source.slice(0, absoluteStart)}${replacer(match)}${source.slice(absoluteEnd)}`;
+}
+
+function replaceFirstInSlice(text, sliceStart, sliceEnd, pattern, replacer) {
+  const source = String(text || "");
+  const slice = source.slice(sliceStart, sliceEnd);
+  const match = slice.match(pattern);
+  if (!match || match.index === undefined) return source;
+  const absoluteStart = sliceStart + match.index;
+  const absoluteEnd = absoluteStart + match[0].length;
+  return `${source.slice(0, absoluteStart)}${replacer(match)}${source.slice(absoluteEnd)}`;
+}
+
+function coerceOriginCommand(value, fallback = "FO") {
+  const command = String(value || fallback || "FO").trim().toUpperCase();
+  return command === "FT" ? "FT" : "FO";
+}
+
+function applySingleFieldGeometryOverride(source, tokenName, geometry = {}) {
+  if (!tokenName || !isPlainObject(geometry)) return source;
+  let output = String(source || "");
+  const window = sourceWindowAroundToken(output, tokenName);
+  if (!window) return output;
+
+  if (Number.isFinite(geometry.x) || Number.isFinite(geometry.y) || geometry.originCommand || geometry.useOrigin) {
+    output = replaceLastInSlice(output, window.start, window.tokenIndex, /\^(FO|FT)(-?\d+),(-?\d+)/g, (match) => {
+      const command = coerceOriginCommand(geometry.originCommand || geometry.useOrigin || match[1], match[1]);
+      const x = Number.isFinite(geometry.x) ? Math.round(geometry.x) : Number(match[2]);
+      const y = Number.isFinite(geometry.y) ? Math.round(geometry.y) : Number(match[3]);
+      return `^${command}${x},${y}`;
+    });
+  }
+
+  const fontHeight = Number(geometry.fontHeight);
+  const fontWidth = Number(geometry.fontWidth);
+  if (Number.isFinite(fontHeight) || Number.isFinite(fontWidth)) {
+    const refreshed = sourceWindowAroundToken(output, tokenName);
+    if (refreshed) {
+      output = replaceLastInSlice(output, refreshed.start, refreshed.tokenIndex, /\^A0([NIRB]),([^,\^\r\n]+),([^,\^\r\n]+)/g, (match) => {
+        const height = Number.isFinite(fontHeight) && !/{{/.test(match[2]) ? Math.round(fontHeight) : match[2];
+        const width = Number.isFinite(fontWidth) && !/{{/.test(match[3]) ? Math.round(fontWidth) : match[3];
+        return `^A0${match[1]},${height},${width}`;
+      });
+    }
+  }
+
+  const fieldWidth = Number(geometry.fieldWidth ?? geometry.boxWidth);
+  const maxLines = Number(geometry.maxLines);
+  const lineSpacing = Number(geometry.lineSpacing);
+  const alignment = trimString(geometry.alignment).toUpperCase();
+  const hasFieldBlockEdit = Number.isFinite(fieldWidth) || Number.isFinite(maxLines) || Number.isFinite(lineSpacing) || ["L", "C", "R", "J"].includes(alignment);
+  if (hasFieldBlockEdit) {
+    const refreshed = sourceWindowAroundToken(output, tokenName);
+    if (refreshed) {
+      output = replaceLastInSlice(output, refreshed.start, refreshed.tokenIndex, /\^FB([^,\^\r\n]+),([^,\^\r\n]+),([^,\^\r\n]*),([^,\^\r\n]*),([^,\^\r\n]*)/g, (match) => {
+        const width = Number.isFinite(fieldWidth) && !/{{/.test(match[1]) ? Math.round(fieldWidth) : match[1];
+        const lines = Number.isFinite(maxLines) && !/{{/.test(match[2]) ? Math.round(maxLines) : match[2];
+        const spacing = Number.isFinite(lineSpacing) ? Math.round(lineSpacing) : (match[3] || "0");
+        const align = ["L", "C", "R", "J"].includes(alignment) && !/{{/.test(match[4]) ? alignment : (match[4] || "L");
+        const hanging = match[5] || "0";
+        return `^FB${width},${lines},${spacing},${align},${hanging}`;
+      });
+    }
+  }
+
+  const border = isPlainObject(geometry.border) ? geometry.border : {};
+  const borderThickness = Number(border.thickness ?? geometry.borderThickness);
+  const borderWidth = Number(border.width);
+  const borderHeight = Number(border.height);
+  const hasBorderEdit = Number.isFinite(borderThickness) || Number.isFinite(borderWidth) || Number.isFinite(borderHeight);
+  if (hasBorderEdit) {
+    const refreshed = sourceWindowAroundToken(output, tokenName, 300, 300);
+    if (refreshed) {
+      output = replaceFirstInSlice(output, refreshed.start, refreshed.end, /\^GB(-?\d+),(-?\d+),(-?\d+)((?:,[^^\r\n]*)?)/, (match) => {
+        const width = Number.isFinite(borderWidth) ? Math.round(borderWidth) : match[1];
+        const height = Number.isFinite(borderHeight) ? Math.round(borderHeight) : match[2];
+        const thickness = Number.isFinite(borderThickness) ? clampStrokeThickness(borderThickness) : match[3];
+        return `^GB${width},${height},${thickness}${match[4] || ""}`;
+      });
+    }
+  }
+
+  return output;
+}
+
+function fieldFitDefinitionFromGeometry(tokenName, geometry = {}) {
+  const fieldKey = fittedFieldKeyFromToken(tokenName);
+  if (!fieldKey || !isPlainObject(geometry)) return null;
+  const definition = {};
+  if (Number.isFinite(geometry.fieldWidth ?? geometry.boxWidth)) definition.boxWidth = Math.round(Number(geometry.fieldWidth ?? geometry.boxWidth));
+  if (Number.isFinite(geometry.maxLines)) definition.maxLines = Math.max(1, Math.round(Number(geometry.maxLines)));
+  if (Number.isFinite(geometry.fontHeight)) definition.fontHeight = Math.max(1, Math.round(Number(geometry.fontHeight)));
+  if (Number.isFinite(geometry.fontWidth)) definition.fontWidth = Math.max(1, Math.round(Number(geometry.fontWidth)));
+  if (Number.isFinite(geometry.borderThickness)) definition.borderThickness = clampStrokeThickness(geometry.borderThickness);
+  const alignment = trimString(geometry.alignment).toUpperCase();
+  if (["L", "C", "R", "J"].includes(alignment)) definition.alignment = alignment;
+  return Object.keys(definition).length ? { fieldKey, definition } : null;
+}
+
+function buildFieldFitDefinitionsFromGeometry(fieldGeometryOverrides = {}) {
+  const definitions = {};
+  for (const [tokenName, geometry] of Object.entries(fieldGeometryOverrides || {})) {
+    const entry = fieldFitDefinitionFromGeometry(tokenName, geometry);
+    if (entry) definitions[entry.fieldKey] = deepMergePlainObjects(definitions[entry.fieldKey] || {}, entry.definition);
+  }
+  return definitions;
+}
+
+function applyFieldGeometryOverridesToTemplateSource(templateText, fieldGeometryOverrides = {}) {
+  let output = String(templateText || "");
+  for (const [tokenName, geometry] of Object.entries(fieldGeometryOverrides || {})) {
+    output = applySingleFieldGeometryOverride(output, tokenName, geometry);
+  }
+  return output;
+}
+
 function roundedScaled(value, scale, offset = 0, options = {}) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return value;
   if (options.preserveZero && numeric === 0) return 0;
-  return Math.max(options.min ?? 0, Math.round((numeric * scale) + offset));
+  let output = Math.round((numeric * scale) + offset);
+  if (Number.isFinite(options.min)) output = Math.max(options.min, output);
+  if (Number.isFinite(options.max)) output = Math.min(options.max, output);
+  return output;
+}
+
+function clampStrokeThickness(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 1;
+  return Math.max(0, Math.min(20, Math.round(number)));
+}
+
+function isFilledGraphicBox(width, height, thickness) {
+  const minDimension = Math.min(Math.abs(Number(width) || 0), Math.abs(Number(height) || 0));
+  return minDimension > 0 && Number(thickness) >= minDimension * 0.45;
+}
+
+function upsertZplScalarCommand(zpl, code, value) {
+  if (!Number.isFinite(value)) return zpl;
+  const normalizedValue = Math.round(value);
+  const pattern = new RegExp(`\\^${code}-?\\d+`);
+  if (pattern.test(zpl)) return zpl.replace(pattern, `^${code}${normalizedValue}`);
+  return String(zpl || "").replace(/\^XA/, `^XA\n^${code}${normalizedValue}`);
+}
+
+function upsertZplPairCommand(zpl, code, x, y) {
+  if (!Number.isFinite(x) && !Number.isFinite(y)) return zpl;
+  const current = String(zpl || "").match(new RegExp(`\\^${code}(-?\\d+),(-?\\d+)`));
+  const resolvedX = Number.isFinite(x) ? Math.round(x) : Number(current?.[1] || 0);
+  const resolvedY = Number.isFinite(y) ? Math.round(y) : Number(current?.[2] || 0);
+  const replacement = `^${code}${resolvedX},${resolvedY}`;
+  if (current) return String(zpl || "").replace(new RegExp(`\\^${code}-?\\d+,-?\\d+`), replacement);
+  return String(zpl || "").replace(/\^XA/, `^XA\n${replacement}`);
+}
+
+function applyTemplateLabLabelGeometryCommands(zpl, profile = {}) {
+  const normalized = normalizeTemplateLabProfileGeometry(profile);
+  let output = String(zpl || "");
+  output = upsertZplScalarCommand(output, "PW", normalized.labelWidthDots);
+  output = upsertZplScalarCommand(output, "LL", normalized.labelHeightDots);
+  output = upsertZplPairCommand(output, "LH", normalized.labelHomeX, normalized.labelHomeY);
+  output = upsertZplScalarCommand(output, "LS", normalized.labelShiftX);
+  output = upsertZplScalarCommand(output, "LT", normalized.labelShiftY);
+  return output;
+}
+
+function scaleGraphicBox(match, width, height, thickness, rest, profile) {
+  const scaleX = profile.globalScaleX;
+  const scaleY = profile.globalScaleY;
+  const averageScale = (scaleX + scaleY) / 2;
+  const scaledWidth = roundedScaled(width, scaleX, 0, { preserveZero: true });
+  const scaledHeight = roundedScaled(height, scaleY, 0, { preserveZero: true });
+  const originalThickness = Number(thickness);
+  const filled = isFilledGraphicBox(width, height, originalThickness);
+  let finalThickness;
+
+  if (filled) {
+    finalThickness = Math.max(1, Math.round(Math.min(Math.abs(scaledWidth), Math.abs(scaledHeight))));
+  } else if (Number.isFinite(profile.borderThickness)) {
+    finalThickness = clampStrokeThickness(profile.borderThickness);
+  } else if (profile.scaleBorderThickness) {
+    finalThickness = clampStrokeThickness(originalThickness * averageScale);
+  } else {
+    finalThickness = clampStrokeThickness(originalThickness);
+  }
+
+  return `^GB${scaledWidth},${scaledHeight},${finalThickness}${rest || ""}`;
+}
+
+function scaleB3Command(command, params, scaleY) {
+  const parts = String(params || "").split(",");
+  if (parts.length >= 3 && Number.isFinite(Number(parts[2]))) {
+    parts[2] = String(roundedScaled(parts[2], scaleY, 0, { min: 1 }));
+  }
+  return `${command}${parts.join(",")}`;
+}
+
+function scaleByCommand(_match, width, ratio, height, profile) {
+  const widthNumber = Number(width);
+  const scaledWidth = Number.isFinite(widthNumber) ? roundedScaled(widthNumber, profile.globalScaleX, 0, { min: 1 }) : width;
+  const output = [`^BY${scaledWidth}`];
+  if (ratio !== undefined) output.push(`,${ratio}`);
+  if (height !== undefined) {
+    const scaledHeight = Number.isFinite(Number(height))
+      ? roundedScaled(height, profile.globalScaleY, 0, { min: 1 })
+      : height;
+    output.push(`,${scaledHeight}`);
+  }
+  return output.join("");
 }
 
 function applyGlobalTemplateLabTransform(renderedZpl, profile = {}) {
-  const scaleX = Number(profile.scaleX || 1);
-  const scaleY = Number(profile.scaleY || 1);
-  const offsetX = Number(profile.offsetX || 0);
-  const offsetY = Number(profile.offsetY || 0);
-  if (scaleX === 1 && scaleY === 1 && offsetX === 0 && offsetY === 0) return renderedZpl;
+  const normalized = normalizeTemplateLabProfileGeometry(profile);
+  const scaleX = normalized.globalScaleX;
+  const scaleY = normalized.globalScaleY;
+  const offsetX = normalized.globalOffsetX;
+  const offsetY = normalized.globalOffsetY;
+  const averageScale = (scaleX + scaleY) / 2;
 
-  const lineScale = Math.max(1, Math.round((scaleX + scaleY) / 2));
-  return String(renderedZpl || "")
+  return applyTemplateLabLabelGeometryCommands(String(renderedZpl || ""), normalized)
     .replace(/\^(FO|FT)(-?\d+),(-?\d+)/g, (_match, command, x, y) =>
       `^${command}${roundedScaled(x, scaleX, offsetX)},${roundedScaled(y, scaleY, offsetY)}`
     )
-    .replace(/\^GB(-?\d+),(-?\d+),(\d+)/g, (_match, width, height, thickness) =>
-      `^GB${roundedScaled(width, scaleX, 0, { preserveZero: true })},${roundedScaled(height, scaleY, 0, { preserveZero: true })},${roundedScaled(thickness, lineScale, 0, { min: 1 })}`
+    .replace(/\^GB(-?\d+),(-?\d+),(-?\d+)((?:,[^^\r\n]*)?)/g, (match, width, height, thickness, rest) =>
+      scaleGraphicBox(match, width, height, thickness, rest, normalized)
     )
-    .replace(/\^A0N,(\d+),(\d+)/g, (_match, height, width) =>
-      `^A0N,${roundedScaled(height, scaleY, 0, { min: 1 })},${roundedScaled(width, scaleX, 0, { min: 1 })}`
+    .replace(/\^A0([NIRB]),(\d+),(\d+)/g, (_match, orientation, height, width) =>
+      `^A0${orientation},${roundedScaled(height, scaleY, 0, { min: 1 })},${roundedScaled(width, scaleX, 0, { min: 1 })}`
     )
     .replace(/\^FB(\d+),/g, (_match, width) =>
       `^FB${roundedScaled(width, scaleX, 0, { min: 1 })},`
-    );
+    )
+    .replace(/\^BQN,([^,\^]+),(\d+)/g, (_match, orientation, magnification) =>
+      `^BQN,${orientation},${roundedScaled(magnification, averageScale, 0, { min: 1, max: 20 })}`
+    )
+    .replace(/\^B3([^,\^]*(?:,[^,\^]*){0,4})/g, (match, params) =>
+      scaleB3Command("^B3", params, scaleY) || match
+    )
+    .replace(/\^BY(\d+)(?:,([^,\^]*))?(?:,(-?\d+))?/g, (match, width, ratio, height) =>
+      scaleByCommand(match, width, ratio, height, normalized)
+    )
+    .replace(/\^GFA,\d+,\d+,\d+,[0-9A-Fa-f]+/g, (gfaCommand) => {
+      const metrics = getGfaCommandMetrics(gfaCommand);
+      if (!metrics) return gfaCommand;
+      return scaleGfaCommand(gfaCommand, Math.max(1, Math.round(metrics.width * scaleX)), Math.max(1, Math.round(metrics.height * scaleY)));
+    });
 }
 
 function applyQrOverrideToRenderedZpl(renderedZpl, profile = {}) {
@@ -4423,6 +5110,26 @@ function buildGfaFromBits(bits, width, height) {
   return `^GFA,${total},${total},${bytesPerRow},${data}`;
 }
 
+function normalizeGfaCommand(value) {
+  const match = String(value || "").match(/\^GFA,\d+,\d+,\d+,[0-9A-Fa-f]+/);
+  return match ? match[0] : "";
+}
+
+function getGfaCommandMetrics(gfaCommand) {
+  const match = String(gfaCommand || "").match(/\^GFA,(\d+),(\d+),(\d+),([0-9A-Fa-f]+)/);
+  if (!match) return null;
+  const total = Number(match[1]);
+  const bytesPerRow = Number(match[3]);
+  if (!Number.isFinite(total) || !Number.isFinite(bytesPerRow) || bytesPerRow <= 0) return null;
+  return {
+    total,
+    bytesPerRow,
+    width: bytesPerRow * 8,
+    height: Math.max(1, Math.floor(total / bytesPerRow)),
+    payloadBytes: Math.floor(String(match[4] || "").length / 2)
+  };
+}
+
 function scaleGfaCommand(gfaCommand, widthDots, heightDots) {
   const match = String(gfaCommand || "").match(/\^GFA,(\d+),(\d+),(\d+),([0-9A-Fa-f]+)/);
   if (!match) return gfaCommand;
@@ -4445,30 +5152,281 @@ function scaleGfaCommand(gfaCommand, widthDots, heightDots) {
   return buildGfaFromBits(scaledBits, targetWidth, targetHeight);
 }
 
+function resolveTemplateLabAssetPath(assetName) {
+  const safeName = sanitizeFilename(assetName);
+  if (!safeName) throw httpError(400, "VALIDATION_ERROR", "assetName is required.");
+  const assetDir = path.resolve(ZPL_TEMPLATE_LAB_ASSET_DIR);
+  const assetPath = path.resolve(assetDir, safeName);
+  if (assetPath !== assetDir && !assetPath.startsWith(`${assetDir}${path.sep}`)) {
+    throw httpError(400, "VALIDATION_ERROR", "Invalid logo asset path.");
+  }
+  return { safeName, assetDir, assetPath };
+}
+
+function paethPredictor(left, up, upLeft) {
+  const p = left + up - upLeft;
+  const pa = Math.abs(p - left);
+  const pb = Math.abs(p - up);
+  const pc = Math.abs(p - upLeft);
+  if (pa <= pb && pa <= pc) return left;
+  return pb <= pc ? up : upLeft;
+}
+
+function parsePngToRgba(buffer) {
+  const bytes = Buffer.from(buffer || []);
+  const signature = "89504e470d0a1a0a";
+  if (bytes.length < 24 || bytes.subarray(0, 8).toString("hex") !== signature) {
+    throw httpError(400, "UNSUPPORTED_LOGO_IMAGE", "Logo upload must be a PNG image.");
+  }
+
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  let interlace = 0;
+  let palette = null;
+  let transparency = null;
+  const idatChunks = [];
+
+  while (offset + 12 <= bytes.length) {
+    const length = bytes.readUInt32BE(offset);
+    const type = bytes.subarray(offset + 4, offset + 8).toString("ascii");
+    const data = bytes.subarray(offset + 8, offset + 8 + length);
+    offset += 12 + length;
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+      interlace = data[12];
+    } else if (type === "PLTE") {
+      palette = data;
+    } else if (type === "tRNS") {
+      transparency = data;
+    } else if (type === "IDAT") {
+      idatChunks.push(data);
+    } else if (type === "IEND") {
+      break;
+    }
+  }
+
+  if (!width || !height || bitDepth !== 8 || interlace !== 0) {
+    throw httpError(400, "UNSUPPORTED_LOGO_IMAGE", "Logo PNG must be non-interlaced 8-bit PNG.");
+  }
+
+  const channelsByColorType = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+  const channels = channelsByColorType[colorType];
+  if (!channels) throw httpError(400, "UNSUPPORTED_LOGO_IMAGE", "Logo PNG color type is not supported.");
+  const inflated = zlib.inflateSync(Buffer.concat(idatChunks));
+  const stride = width * channels;
+  const raw = Buffer.alloc(height * stride);
+  let inputOffset = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    const filter = inflated[inputOffset];
+    inputOffset += 1;
+    const previousRow = y > 0 ? raw.subarray((y - 1) * stride, y * stride) : null;
+    const row = raw.subarray(y * stride, (y + 1) * stride);
+    for (let x = 0; x < stride; x += 1) {
+      const current = inflated[inputOffset + x];
+      const left = x >= channels ? row[x - channels] : 0;
+      const up = previousRow ? previousRow[x] : 0;
+      const upLeft = previousRow && x >= channels ? previousRow[x - channels] : 0;
+      if (filter === 0) row[x] = current;
+      else if (filter === 1) row[x] = (current + left) & 0xff;
+      else if (filter === 2) row[x] = (current + up) & 0xff;
+      else if (filter === 3) row[x] = (current + Math.floor((left + up) / 2)) & 0xff;
+      else if (filter === 4) row[x] = (current + paethPredictor(left, up, upLeft)) & 0xff;
+      else throw httpError(400, "UNSUPPORTED_LOGO_IMAGE", "Logo PNG uses an unsupported scanline filter.");
+    }
+    inputOffset += stride;
+  }
+
+  const rgba = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const sourceIndex = (y * stride) + (x * channels);
+      const targetIndex = ((y * width) + x) * 4;
+      if (colorType === 0) {
+        const value = raw[sourceIndex];
+        rgba[targetIndex] = value;
+        rgba[targetIndex + 1] = value;
+        rgba[targetIndex + 2] = value;
+        rgba[targetIndex + 3] = 255;
+      } else if (colorType === 2) {
+        rgba[targetIndex] = raw[sourceIndex];
+        rgba[targetIndex + 1] = raw[sourceIndex + 1];
+        rgba[targetIndex + 2] = raw[sourceIndex + 2];
+        rgba[targetIndex + 3] = 255;
+      } else if (colorType === 3) {
+        const paletteIndex = raw[sourceIndex];
+        rgba[targetIndex] = palette?.[paletteIndex * 3] ?? 255;
+        rgba[targetIndex + 1] = palette?.[(paletteIndex * 3) + 1] ?? 255;
+        rgba[targetIndex + 2] = palette?.[(paletteIndex * 3) + 2] ?? 255;
+        rgba[targetIndex + 3] = transparency?.[paletteIndex] ?? 255;
+      } else if (colorType === 4) {
+        const value = raw[sourceIndex];
+        rgba[targetIndex] = value;
+        rgba[targetIndex + 1] = value;
+        rgba[targetIndex + 2] = value;
+        rgba[targetIndex + 3] = raw[sourceIndex + 1];
+      } else if (colorType === 6) {
+        rgba[targetIndex] = raw[sourceIndex];
+        rgba[targetIndex + 1] = raw[sourceIndex + 1];
+        rgba[targetIndex + 2] = raw[sourceIndex + 2];
+        rgba[targetIndex + 3] = raw[sourceIndex + 3];
+      }
+    }
+  }
+
+  return { width, height, rgba };
+}
+
+function imageToGfaCommand(image, options = {}) {
+  const targetWidth = numberFromInput(options.widthDots ?? options.targetWidthDots, { min: 1, max: 2000, integer: true }) || image.width;
+  const targetHeight = numberFromInput(options.heightDots ?? options.targetHeightDots, { min: 1, max: 2000, integer: true }) || image.height;
+  const threshold = numberFromInput(options.threshold, { min: 0, max: 255, integer: true }) ?? 128;
+  const dithering = trimString(options.dithering).toLowerCase() === "ordered" ? "ordered" : "none";
+  const bayer = [
+    [0, 8, 2, 10],
+    [12, 4, 14, 6],
+    [3, 11, 1, 9],
+    [15, 7, 13, 5]
+  ];
+  const bits = [];
+
+  for (let y = 0; y < targetHeight; y += 1) {
+    const sourceY = Math.min(image.height - 1, Math.floor((y * image.height) / targetHeight));
+    const row = [];
+    for (let x = 0; x < targetWidth; x += 1) {
+      const sourceX = Math.min(image.width - 1, Math.floor((x * image.width) / targetWidth));
+      const index = ((sourceY * image.width) + sourceX) * 4;
+      const alpha = image.rgba[index + 3] / 255;
+      const red = (image.rgba[index] * alpha) + (255 * (1 - alpha));
+      const green = (image.rgba[index + 1] * alpha) + (255 * (1 - alpha));
+      const blue = (image.rgba[index + 2] * alpha) + (255 * (1 - alpha));
+      const luminance = (red * 0.299) + (green * 0.587) + (blue * 0.114);
+      const thresholdShift = dithering === "ordered" ? (bayer[y % 4][x % 4] - 7.5) * 10 : 0;
+      row.push(luminance < Math.max(0, Math.min(255, threshold + thresholdShift)) ? 1 : 0);
+    }
+    bits.push(row);
+  }
+
+  return {
+    gfa: buildGfaFromBits(bits, targetWidth, targetHeight),
+    widthDots: targetWidth,
+    heightDots: targetHeight,
+    threshold,
+    dithering
+  };
+}
+
+function convertPngBufferToGfa(buffer, options = {}) {
+  return imageToGfaCommand(parsePngToRgba(buffer), options);
+}
+
+function storeTemplateLabLogoAsset(file, options = {}) {
+  if (!file?.buffer) throw httpError(400, "VALIDATION_ERROR", "Logo upload requires multipart field 'file'.");
+  const originalName = sanitizeFilename(file.originalname || `pri-logo-${Date.now()}.png`);
+  const extension = path.extname(originalName).toLowerCase() || ".png";
+  if (extension !== ".png") throw httpError(400, "UNSUPPORTED_LOGO_IMAGE", "Logo upload currently supports PNG files.");
+  const baseName = path.basename(originalName, extension).replace(/[^A-Za-z0-9_.-]/g, "_") || "pri-logo";
+  const assetName = `${baseName}-${formatTemplateBackupTimestamp()}${extension}`;
+  const { assetDir, assetPath } = resolveTemplateLabAssetPath(assetName);
+  fs.mkdirSync(assetDir, { recursive: true });
+  fs.writeFileSync(assetPath, file.buffer);
+
+  const converted = convertPngBufferToGfa(file.buffer, options);
+  const gfaName = `${baseName}-${formatTemplateBackupTimestamp()}.gfa.zpl`;
+  const gfaPath = path.join(assetDir, gfaName);
+  fs.writeFileSync(gfaPath, `${converted.gfa}\n`, "utf8");
+
+  return {
+    ok: true,
+    assetName,
+    assetPath,
+    gfaName,
+    gfaPath,
+    ...converted,
+    bytes: file.buffer.length
+  };
+}
+
+function listTemplateLabLogoAssets() {
+  fs.mkdirSync(ZPL_TEMPLATE_LAB_ASSET_DIR, { recursive: true });
+  const assets = fs.readdirSync(ZPL_TEMPLATE_LAB_ASSET_DIR, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .filter((entry) => /\.(png|gfa\.zpl)$/i.test(entry.name))
+    .map((entry) => {
+      const assetPath = path.join(ZPL_TEMPLATE_LAB_ASSET_DIR, entry.name);
+      const stat = fs.statSync(assetPath);
+      return { name: entry.name, path: assetPath, bytes: stat.size, updatedAt: stat.mtime.toISOString() };
+    })
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return { ok: true, assetDir: ZPL_TEMPLATE_LAB_ASSET_DIR, assets };
+}
+
+function loadTemplateLabLogoAsset(assetName, options = {}) {
+  const { safeName, assetPath } = resolveTemplateLabAssetPath(assetName);
+  if (!fs.existsSync(assetPath)) throw httpError(404, "LOGO_ASSET_NOT_FOUND", "Logo asset was not found.");
+  if (/\.gfa\.zpl$/i.test(safeName)) {
+    const gfa = normalizeGfaCommand(fs.readFileSync(assetPath, "utf8"));
+    if (!gfa) throw httpError(400, "INVALID_LOGO_ASSET", "Selected GFA asset does not contain a ^GFA command.");
+    const metrics = getGfaCommandMetrics(gfa);
+    return {
+      ok: true,
+      assetName: safeName,
+      assetPath,
+      gfa,
+      widthDots: metrics?.width || null,
+      heightDots: metrics?.height || null
+    };
+  }
+  if (!/\.png$/i.test(safeName)) throw httpError(400, "UNSUPPORTED_LOGO_IMAGE", "Selected logo asset must be PNG or .gfa.zpl.");
+  const converted = convertPngBufferToGfa(fs.readFileSync(assetPath), options);
+  return { ok: true, assetName: safeName, assetPath, ...converted };
+}
+
 function applyLogoOverrideToRenderedZpl(renderedZpl, profile = {}) {
   const logo = profile.logo || {};
-  if (logo.mode !== "static logo") return renderedZpl;
+  const uploadedGfa = normalizeGfaCommand(logo.gfa);
+  if (logo.mode !== "static logo" && !uploadedGfa) return renderedZpl;
 
-  return String(renderedZpl || "").replace(
+  const replaced = String(renderedZpl || "").replace(
     /(\^FX Static PRI logo[^\r\n]*\r?\n)?\^FO(-?\d+),(-?\d+)\r?\n(\^GFA,(\d+),(\d+),(\d+),([0-9A-Fa-f]+))\^FS/,
     (_match, comment, currentX, currentY, gfaCommand, _totalA, _totalB, currentBytesPerRow, gfaData) => {
-      const sourceWidth = Number(currentBytesPerRow) * 8;
-      const sourceHeight = Math.floor((String(gfaData).length / 2) / Number(currentBytesPerRow));
+      const baseGfa = uploadedGfa || gfaCommand;
+      const metrics = getGfaCommandMetrics(baseGfa) || {
+        width: Number(currentBytesPerRow) * 8,
+        height: Math.floor((String(gfaData).length / 2) / Number(currentBytesPerRow))
+      };
       const scale = Number.isFinite(logo.scale) ? Number(logo.scale) : 1;
-      const targetWidth = Number.isFinite(logo.widthDots) ? logo.widthDots : Math.max(1, Math.round(sourceWidth * scale));
-      const targetHeight = Number.isFinite(logo.heightDots) ? logo.heightDots : Math.max(1, Math.round(sourceHeight * scale));
+      const targetWidth = Number.isFinite(logo.widthDots) ? logo.widthDots : Math.max(1, Math.round(metrics.width * scale));
+      const targetHeight = Number.isFinite(logo.heightDots) ? logo.heightDots : Math.max(1, Math.round(metrics.height * scale));
       const x = Number.isFinite(logo.x) ? logo.x : Number(currentX);
       const y = Number.isFinite(logo.y) ? logo.y : Number(currentY);
-      const scaled = scaleGfaCommand(gfaCommand, targetWidth, targetHeight);
-      return `${comment || "^FX Static PRI logo template-lab override\n"}^FO${Math.round(x)},${Math.round(y)}\n${scaled}^FS`;
+      const scaled = scaleGfaCommand(baseGfa, targetWidth, targetHeight);
+      const sourceComment = logo.assetName ? `^FX Static PRI logo template-lab asset ${sanitizeFilename(logo.assetName)}\n` : comment;
+      return `${sourceComment || "^FX Static PRI logo template-lab override\n"}^FO${Math.round(x)},${Math.round(y)}\n${scaled}^FS`;
     }
   );
+  if (replaced !== String(renderedZpl || "") || !uploadedGfa) return replaced;
+
+  const x = Number.isFinite(logo.x) ? logo.x : 0;
+  const y = Number.isFinite(logo.y) ? logo.y : 0;
+  const metrics = getGfaCommandMetrics(uploadedGfa);
+  const scale = Number.isFinite(logo.scale) ? Number(logo.scale) : 1;
+  const targetWidth = Number.isFinite(logo.widthDots) ? logo.widthDots : Math.max(1, Math.round((metrics?.width || 96) * scale));
+  const targetHeight = Number.isFinite(logo.heightDots) ? logo.heightDots : Math.max(1, Math.round((metrics?.height || 32) * scale));
+  const command = `^FX Static PRI logo template-lab asset ${sanitizeFilename(logo.assetName || "uploaded")}\n^FO${Math.round(x)},${Math.round(y)}\n${scaleGfaCommand(uploadedGfa, targetWidth, targetHeight)}^FS\n`;
+  return replaced.includes("^XZ") ? replaced.replace(/\^XZ/, `${command}^XZ`) : `${replaced}\n${command}`;
 }
 
 function applyTemplateLabRenderedOverrides(renderedZpl, profile = {}) {
-  let output = applyGlobalTemplateLabTransform(renderedZpl, profile);
-  output = applyQrOverrideToRenderedZpl(output, profile);
+  let output = applyQrOverrideToRenderedZpl(renderedZpl, profile);
   output = applyLogoOverrideToRenderedZpl(output, profile);
+  output = applyGlobalTemplateLabTransform(output, profile);
   return output;
 }
 
@@ -4480,8 +5438,11 @@ const TEMPLATE_LAB_SAMPLE_VALUE_PATTERNS = Object.freeze([
   Object.freeze({ label: "PT000086-Bxx", pattern: /PT000086-B\d{2}/ }),
   Object.freeze({ label: "PO12345", pattern: /\bPO12345\b/ }),
   Object.freeze({ label: "PROD001", pattern: /\bPROD001\b/ }),
-  Object.freeze({ label: "ULTRAMARINEBLUE", pattern: /ULTRAMARINEBLUE/ }),
-  Object.freeze({ label: "POLYPROPYLENE", pattern: /POLYPROPYLENE/ })
+  Object.freeze({ label: "LAB", pattern: /\^FD\s*LAB\s*\^FS|\bERP=LAB\b|\bLAB SAMPLE\b/i }),
+  Object.freeze({ label: "ULTRAMAR", pattern: /ULTRAMAR/i }),
+  Object.freeze({ label: "POLYPROP", pattern: /POLYPROP/i }),
+  Object.freeze({ label: "P3 EXT", pattern: /\bP3 EXT\b/i }),
+  Object.freeze({ label: "P8LABTEST", pattern: /\bP8LABTEST\b/i })
 ]);
 
 function collectDynamicZplTokens(zpl) {
@@ -4512,6 +5473,38 @@ function applyFieldFitDefinitionsToTemplateSource(source, fieldFitDefinitions = 
   return output;
 }
 
+function scaleFieldFitNumber(value, scale, options = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return value;
+  return roundedScaled(number, scale, 0, options);
+}
+
+function scaleTemplateLabFieldFitDefinitionsForPromotion(fieldFitDefinitions = {}, profile = {}) {
+  const normalized = normalizeTemplateLabProfileGeometry(profile);
+  const scaleX = normalized.globalScaleX;
+  const scaleY = normalized.globalScaleY;
+  const scaleBorders = normalized.scaleBorderThickness;
+  const scaled = deepCloneJson(fieldFitDefinitions || {});
+
+  for (const definition of Object.values(scaled || {})) {
+    if (!isPlainObject(definition)) continue;
+    if (definition.boxWidth !== undefined) definition.boxWidth = scaleFieldFitNumber(definition.boxWidth, scaleX, { min: 1 });
+    if (definition.boxHeight !== undefined) definition.boxHeight = scaleFieldFitNumber(definition.boxHeight, scaleY, { min: 1 });
+    if (definition.fontHeight !== undefined) definition.fontHeight = scaleFieldFitNumber(definition.fontHeight, scaleY, { min: 1 });
+    if (definition.fontWidth !== undefined) definition.fontWidth = scaleFieldFitNumber(definition.fontWidth, scaleX, { min: 1 });
+    if (definition.borderThickness !== undefined && scaleBorders) {
+      definition.borderThickness = clampStrokeThickness(definition.borderThickness * ((scaleX + scaleY) / 2));
+    }
+    for (const tier of ["large", "medium", "small", "min"]) {
+      if (!isPlainObject(definition[tier])) continue;
+      if (definition[tier].fontH !== undefined) definition[tier].fontH = scaleFieldFitNumber(definition[tier].fontH, scaleY, { min: 1 });
+      if (definition[tier].fontW !== undefined) definition[tier].fontW = scaleFieldFitNumber(definition[tier].fontW, scaleX, { min: 1 });
+    }
+  }
+
+  return scaled;
+}
+
 function templateLabFieldFitCommentPattern() {
   const escapedPrefix = FIELD_FIT_DEFINITIONS_COMMENT_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`\\^FX\\s*${escapedPrefix}[A-Za-z0-9+/=]+\\r?\\n?`, "g");
@@ -4529,12 +5522,16 @@ function upsertTemplateFieldFitDefinitionsComment(source, fieldFitDefinitions = 
 }
 
 function applyTemplateLabDynamicSourceOverrides(sourceTemplate, profile = {}) {
-  let output = applyFieldPositionOverridesToTemplateSource(sourceTemplate, profile?.fieldPositionOverrides || {});
-  output = applyGlobalTemplateLabTransform(output, profile);
+  const geometryFieldFitDefinitions = buildFieldFitDefinitionsFromGeometry(profile?.fieldGeometryOverrides || {});
+  const fieldFitDefinitions = deepMergePlainObjects(profile?.fieldFitDefinitions || {}, geometryFieldFitDefinitions);
+  let output = applyFieldGeometryOverridesToTemplateSource(sourceTemplate, profile?.fieldGeometryOverrides || {});
+  output = applyFieldPositionOverridesToTemplateSource(output, profile?.fieldPositionOverrides || {});
   output = applyQrOverrideToRenderedZpl(output, profile);
   output = applyLogoOverrideToRenderedZpl(output, profile);
-  output = applyFieldFitDefinitionsToTemplateSource(output, profile?.fieldFitDefinitions || {});
-  output = upsertTemplateFieldFitDefinitionsComment(output, profile?.fieldFitDefinitions || {});
+  output = applyFieldFitDefinitionsToTemplateSource(output, fieldFitDefinitions);
+  const promotedFieldFitDefinitions = scaleTemplateLabFieldFitDefinitionsForPromotion(fieldFitDefinitions, profile);
+  output = upsertTemplateFieldFitDefinitionsComment(output, promotedFieldFitDefinitions);
+  output = applyGlobalTemplateLabTransform(output, profile);
   return output;
 }
 
@@ -4564,7 +5561,8 @@ function promoteTemplateLabDynamicTemplate(body = {}) {
   }
 
   const sourceTemplate = loadZplTemplate(selected.templatePath);
-  if (!hasDynamicZplTokens(sourceTemplate)) {
+  const tokensBefore = collectDynamicZplTokens(sourceTemplate);
+  if (!tokensBefore.length) {
     throw httpError(400, "DYNAMIC_TEMPLATE_REQUIRED", "Production promotion requires a dynamic .template.zpl source with {{...}} tokens.", {
       template: selected.name,
       templatePath: selected.templatePath
@@ -4577,6 +5575,15 @@ function promoteTemplateLabDynamicTemplate(body = {}) {
     throw httpError(400, "DYNAMIC_TEMPLATE_TOKENS_MISSING", "Promotion rejected because the updated template has no {{...}} tokens.", {
       template: selected.name,
       templatePath: selected.templatePath
+    });
+  }
+  if (remainingTokens.length < tokensBefore.length) {
+    throw httpError(400, "DYNAMIC_TEMPLATE_TOKEN_COUNT_DROPPED", "Promotion rejected because edited template lost dynamic {{...}} tokens.", {
+      template: selected.name,
+      templatePath: selected.templatePath,
+      tokenCountBefore: tokensBefore.length,
+      tokenCountAfter: remainingTokens.length,
+      missingTokens: tokensBefore.filter((token) => !remainingTokens.includes(token))
     });
   }
 
@@ -4599,7 +5606,9 @@ function promoteTemplateLabDynamicTemplate(body = {}) {
     profileKey: profile.key,
     templatePath: selected.templatePath,
     backupPath,
-    tokenCount: remainingTokens.length
+    tokenCountBefore: tokensBefore.length,
+    tokenCountAfter: remainingTokens.length,
+    changedFields: Object.keys(profile.fieldGeometryOverrides || {})
   });
 
   return {
@@ -4607,9 +5616,13 @@ function promoteTemplateLabDynamicTemplate(body = {}) {
     template: selected.name,
     profileKey: profile.key,
     templatePath: selected.templatePath,
+    updatedTemplatePath: selected.templatePath,
     backupPath,
     tokenCount: remainingTokens.length,
+    tokenCountBefore: tokensBefore.length,
+    tokenCountAfter: remainingTokens.length,
     tokens: remainingTokens,
+    changedFields: Object.keys(profile.fieldGeometryOverrides || {}),
     bytes: Buffer.byteLength(updatedTemplate, "utf8"),
     message: "Dynamic template promoted to production source. Rendered proof ZPL was not saved."
   };
@@ -4821,6 +5834,9 @@ function buildApproximateZplPreview(renderedZpl, profile = {}) {
     if (command.code === "PW") {
       const width = Number(command.params);
       if (Number.isFinite(width) && width > 0) labelWidth = width;
+    } else if (command.code === "LL") {
+      const height = Number(command.params);
+      if (Number.isFinite(height) && height > 0) labelHeight = height;
     } else if (command.code === "FO" || command.code === "FT") {
       const [x, y] = parseZplNumberList(command.params);
       if (Number.isFinite(x)) state.x = x;
@@ -5064,8 +6080,10 @@ async function buildTemplatePreviewPayload(input = {}) {
   const profile = buildEffectiveTemplateLabProfile(profileKey, selected.definition.defaultProfileKey, inlineOverrides);
   const data = buildTemplateLabData(input, selected.definition);
   const sourceTemplateText = loadZplTemplate(selected.templatePath);
-  const templateText = applyFieldPositionOverridesToTemplateSource(sourceTemplateText, profile?.fieldPositionOverrides || {});
-  const renderOptions = { fieldFitDefinitions: profile?.fieldFitDefinitions || {} };
+  const geometryFieldFitDefinitions = buildFieldFitDefinitionsFromGeometry(profile?.fieldGeometryOverrides || {});
+  const templateTextWithGeometry = applyFieldGeometryOverridesToTemplateSource(sourceTemplateText, profile?.fieldGeometryOverrides || {});
+  const templateText = applyFieldPositionOverridesToTemplateSource(templateTextWithGeometry, profile?.fieldPositionOverrides || {});
+  const renderOptions = { fieldFitDefinitions: deepMergePlainObjects(profile?.fieldFitDefinitions || {}, geometryFieldFitDefinitions) };
   const renderedResult = selected.definition.requiresRfid
     ? renderZplTemplateWithMetadata(templateText, data, renderOptions)
     : renderZplTemplateWithoutRfidWithMetadata(templateText, data, renderOptions);
@@ -5117,6 +6135,19 @@ function saveTemplateLabProfileOverrides(body = {}) {
   const explicitOverrides = parseJsonObjectField(body.overrides ?? body.profileOverrides, "overrides");
   const flatOverrides = buildProfileOverridesFromInput({ ...body, profileOverrides: undefined });
   const overrides = deepMergePlainObjects(explicitOverrides, flatOverrides);
+  const templateName = trimString(body.template || body.templateName || overrides.templateName || baseProfile.template);
+  let templatePath = "";
+  try {
+    templatePath = normalizeTemplateLabTemplateName(templateName).templatePath;
+  } catch {
+    templatePath = path.join(ZPL_TEMPLATE_SOURCE_DIR, path.basename(path.win32.basename(templateName || baseProfile.template || "")));
+  }
+  overrides.profileKey = profileKey;
+  overrides.templateName = templateName;
+  overrides.sourceTemplatePath = templatePath;
+  overrides.updatedAt = isoNow();
+  const updatedBy = trimString(body.updatedBy || body.operator || body.user || body.updatedByName);
+  if (updatedBy) overrides.updatedBy = updatedBy;
   const config = readTemplateLabProfileConfig();
   config.profiles = isPlainObject(config.profiles) ? config.profiles : {};
   config.profiles[profileKey] = overrides;
@@ -5135,6 +6166,96 @@ function saveTemplateLabProfileOverrides(body = {}) {
     profileConfigPath: ZPL_TEMPLATE_LAB_PROFILE_PATH,
     overrides,
     profile: buildEffectiveTemplateLabProfile(profileKey, profileKey, {})
+  };
+}
+
+function resetTemplateLabProfileOverrides(body = {}) {
+  const profileKey = trimString(body.profileKey || body.profile).toUpperCase();
+  const baseProfile = getStationProfile(profileKey);
+  if (!baseProfile) {
+    throw httpError(400, "UNSUPPORTED_TEMPLATE_LAB_PROFILE", "Template Lab can only reset approved station/template profiles.", {
+      profileKey,
+      supportedProfiles: listStationProfiles().map((profile) => profile.key)
+    });
+  }
+
+  const config = readTemplateLabProfileConfig();
+  config.profiles = isPlainObject(config.profiles) ? config.profiles : {};
+  delete config.profiles[profileKey];
+  config.updatedAt = isoNow();
+  writeTemplateLabProfileConfig(config);
+
+  return {
+    ok: true,
+    profileKey,
+    profileConfigPath: ZPL_TEMPLATE_LAB_PROFILE_PATH,
+    profile: buildEffectiveTemplateLabProfile(profileKey, profileKey, {})
+  };
+}
+
+function buildCalibrationGridZpl(profile = {}) {
+  const normalized = normalizeTemplateLabProfileGeometry(profile);
+  const width = normalized.labelWidthDots || 812;
+  const height = normalized.labelHeightDots || 1218;
+  const centerX = Math.round(width / 2);
+  const centerY = Math.round(height / 2);
+  const rulerStep = 100;
+  const commands = [
+    "^XA",
+    "^CI28",
+    `^PW${width}`,
+    `^LL${height}`,
+    "^FO0,0^GB" + Math.max(1, width - 1) + "," + Math.max(1, height - 1) + ",3^FS",
+    `^FO${centerX},0^GB0,${height},2^FS`,
+    `^FO0,${centerY}^GB${width},0,2^FS`,
+    "^A0N,24,24",
+    "^FO12,28^FD0,0^FS",
+    `^FO${Math.max(0, width - 125)},28^FDRIGHT^FS`,
+    `^FO12,${Math.max(0, height - 24)}^FDBOTTOM^FS`,
+    `^FO${Math.max(0, centerX - 65)},${Math.max(0, centerY - 12)}^FDCENTER^FS`
+  ];
+
+  for (let x = 0; x <= width; x += rulerStep) {
+    commands.push(`^FO${x},0^GB0,35,2^FS`);
+    commands.push(`^FO${Math.max(0, x + 4)},38^A0N,18,18^FD${x}^FS`);
+  }
+  for (let y = 0; y <= height; y += rulerStep) {
+    commands.push(`^FO0,${y}^GB35,0,2^FS`);
+    commands.push(`^FO40,${Math.max(0, y + 4)}^A0N,18,18^FD${y}^FS`);
+  }
+
+  commands.push("^XZ");
+  return applyGlobalTemplateLabTransform(commands.join("\n"), normalized);
+}
+
+async function sendTemplateLabCalibrationGrid(body = {}) {
+  if (body.confirmTestPrint !== true) {
+    throw httpError(400, "TEMPLATE_TEST_CONFIRM_REQUIRED", "confirmTestPrint:true is required before sending rendered ZPL directly to a printer.");
+  }
+  const printerIp = trimString(body.printerIp || body.host);
+  const printerPort = Number(body.port || body.printerPort || 9100);
+  if (!printerIp) throw httpError(400, "VALIDATION_ERROR", "printerIp is required.");
+  if (!Number.isInteger(printerPort) || printerPort <= 0 || printerPort > 65535) {
+    throw httpError(400, "VALIDATION_ERROR", "port must be a valid TCP port.");
+  }
+
+  const selected = body.template || body.templateName ? normalizeTemplateLabTemplateName(body.template || body.templateName) : null;
+  const profileKey = trimString(body.profileKey || body.profile || selected?.definition?.defaultProfileKey).toUpperCase();
+  const inlineOverrides = buildProfileOverridesFromInput(body);
+  const profile = buildEffectiveTemplateLabProfile(profileKey, selected?.definition?.defaultProfileKey || profileKey, inlineOverrides);
+  if (!profile) throw httpError(400, "UNSUPPORTED_TEMPLATE_LAB_PROFILE", "Template Lab can only send calibration grids for approved profiles.");
+
+  const zpl = buildCalibrationGridZpl(profile);
+  const sendFn = templateTestSendFunctionForTests || sendZplOverTcp;
+  const sendResult = await sendFn({ printerIp, port: printerPort, zpl, timeoutMs: getZplTcpTimeoutMs() });
+  return {
+    ok: true,
+    calibrationPrint: true,
+    profileKey: profile.key,
+    printerIp,
+    printerPort,
+    bytesSent: sendResult?.bytesSent ?? Buffer.byteLength(zpl, "utf8"),
+    message: "Template Lab calibration grid sent directly to printer. This bypassed the production queue."
   };
 }
 
@@ -6486,6 +7607,15 @@ app.get("/api/print/template-lab/catalog", requireOfflineLocalAccess, (req, res)
   }
 });
 
+app.get("/api/print/template-lab/template-geometry", requireOfflineLocalAccess, (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(getTemplateLabTemplateGeometryPayload(req.query || {}));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_LAB_GEOMETRY_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
 app.post("/api/print/template-lab/profile", requireOfflineLocalAccess, (req, res) => {
   try {
     res.setHeader("Cache-Control", "no-store");
@@ -6495,12 +7625,57 @@ app.post("/api/print/template-lab/profile", requireOfflineLocalAccess, (req, res
   }
 });
 
+app.post("/api/print/template-lab/profile/reset", requireOfflineLocalAccess, (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(resetTemplateLabProfileOverrides(req.body || {}));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_LAB_PROFILE_RESET_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
 app.post("/api/print/template-lab/promote", requireOfflineLocalAccess, (req, res) => {
   try {
     res.setHeader("Cache-Control", "no-store");
     return res.json(promoteTemplateLabDynamicTemplate(req.body || {}));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_LAB_PROMOTE_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
+app.get("/api/print/template-lab/logo-assets", requireOfflineLocalAccess, (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(listTemplateLabLogoAssets());
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_LAB_LOGO_ASSETS_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
+app.post("/api/print/template-lab/logo-assets", requireOfflineLocalAccess, upload.single("file"), (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(storeTemplateLabLogoAsset(req.file, req.body || {}));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_LAB_LOGO_UPLOAD_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
+app.post("/api/print/template-lab/logo-assets/select", requireOfflineLocalAccess, (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(loadTemplateLabLogoAsset(req.body?.assetName || req.body?.logoAssetName, req.body || {}));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_LAB_LOGO_SELECT_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
+app.post("/api/print/template-lab/calibration-test-send", requireOfflineLocalAccess, async (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(await sendTemplateLabCalibrationGrid(req.body || {}));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_LAB_CALIBRATION_SEND_ERROR", message: error.message, details: error.details || undefined });
   }
 });
 
@@ -7908,7 +9083,14 @@ module.exports = {
   getZplQueueStatusPayload,
   getZplPersistentSocketStatusForAll,
   getTemplateLabCatalogPayload,
+  applyGlobalTemplateLabTransform,
+  applyTemplateLabDynamicSourceOverrides,
+  applyFieldGeometryOverridesToTemplateSource,
+  buildCalibrationGridZpl,
+  getTemplateLabTemplateGeometryPayload,
+  parseTemplateLabSourceGeometry,
   promoteTemplateLabDynamicTemplate,
+  resetTemplateLabProfileOverrides,
   saveTemplateLabProfileOverrides,
   isQueueItemSafeToRetry,
   markRecentZplSendAccepted,

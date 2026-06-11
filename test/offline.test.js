@@ -416,10 +416,21 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.text.includes("Export Profile JSON"), true);
   assert.equal(result.text.includes("Copy JSON"), true);
   assert.equal(result.text.includes("Promote Dynamic Template to Production"), true);
-  assert.equal(result.text.includes("H = font height dots"), true);
-  assert.equal(result.text.includes("Product Description & Field Origins"), true);
+  assert.equal(result.text.includes("Current Template Field Geometry"), true);
+  assert.equal(result.text.includes("Compare Current vs Staged"), true);
+  assert.equal(result.text.includes("Reload From Current Template"), true);
+  assert.equal(result.text.includes("Scale border thickness with label scale"), true);
+  assert.equal(result.text.includes("Reset station profile to template defaults"), true);
+  assert.equal(result.text.includes("Print calibration grid"), true);
   assert.equal(result.text.includes("zpl-preview-frame"), true);
-  assert.equal(result.text.includes("scaleXRange"), true);
+  assert.equal(result.text.includes("globalScaleXRange"), true);
+  assert.equal(result.text.includes("proofTargetLine"), true);
+  assert.equal(result.text.includes("calibrationSummary"), true);
+
+  const templateLabScript = fs.readFileSync(path.join(REPO_ROOT, "public", "offline", "template-lab.js"), "utf8");
+  assert.equal(templateLabScript.includes("P8: Object.freeze({ ip: \"192.168.50.214\", port: 9100 })"), true);
+  assert.equal(templateLabScript.includes("P8: Object.freeze({ ip: \"192.168.7.122\", port: 9100 })"), true);
+  assert.equal(templateLabScript.includes("validateProofPrinterTarget"), true);
 
   result = await request("GET", "/api/print/template-lab/catalog");
   assert.equal(result.status, 200);
@@ -429,6 +440,34 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.json.templates.some((template) => template.name === "RFID-FG-P8.template.zpl"), true);
   assert.equal(result.json.profiles.some((profile) => profile.key === "P1:RAW"), true);
   assert.equal(result.json.profiles.some((profile) => profile.key === "P8:FG"), true);
+
+  result = await request("GET", "/api/print/template-lab/template-geometry?template=RFID-RAW-P5.template.zpl&profileKey=P5:RAW");
+  assert.equal(result.status, 200);
+  assert.equal(result.json.templateName, "RFID-RAW-P5.template.zpl");
+  assert.equal(result.json.templatePath, zplTemplatePath("RFID-RAW-P5.template.zpl"));
+  assert.equal(result.json.label.labelWidthDots, 750);
+  assert.equal(result.json.fields.some((field) => field.tokenName === "lotNumber" && field.originCommand === "FT" && field.fontHeight === 104 && field.fontWidth === 140), true);
+  assert.equal(result.json.fields.some((field) => field.tokenName === "productDescriptionText" && field.fieldWidth !== null && field.maxLines !== null), true);
+  assert.equal(result.json.qr.x, 103);
+  assert.equal(result.json.qr.magnification, 6);
+  assert.equal(result.json.logo.x, 612);
+  assert.equal(result.json.logo.widthDots, 96);
+  assert.ok(Array.isArray(result.json.borders));
+
+  const parserTemplatePath = zplTemplatePath("RFID-RAW-P5.template.zpl");
+  const parserOriginal = fs.readFileSync(parserTemplatePath, "utf8");
+  fs.writeFileSync(parserTemplatePath, parserOriginal.replace("^PW750", "^PW999"), "utf8");
+  result = await request("GET", "/api/print/template-lab/template-geometry?template=RFID-RAW-P5.template.zpl&profileKey=P5:RAW");
+  fs.writeFileSync(parserTemplatePath, parserOriginal, "utf8");
+  assert.equal(result.status, 200);
+  assert.equal(result.json.label.labelWidthDots, 999);
+
+  const patchedSource = serverModule.applyFieldGeometryOverridesToTemplateSource(
+    "^XA\n^FO10,20^A0N,30,40^FB200,1,0,C,0^FD{{lotNumber}}^FS\n^XZ",
+    { lotNumber: { x: 15, y: 25, fontHeight: 35, fontWidth: 45, fieldWidth: 220, maxLines: 2, alignment: "L", originCommand: "FT" } }
+  );
+  assert.equal(patchedSource.includes("^FT15,25^A0N,35,45^FB220,2,0,L,0^FD{{lotNumber}}^FS"), true);
+  assert.equal(patchedSource.includes("{{lotNumber}}"), true);
 
   const previewBody = {
     template: "RFID-RAW-P1.template.zpl",
@@ -468,14 +507,16 @@ test("template lab page, preview, and test send stay outside production queue", 
     body: {
       ...previewBody,
       profileOverrides: {
-        scaleX: 1.02,
-        scaleY: 0.98,
-        offsetX: 4,
-        offsetY: 5,
+        globalScaleX: 1.02,
+        globalScaleY: 0.98,
+        globalOffsetX: 4,
+        globalOffsetY: 5,
+        borderThickness: 6,
+        scaleBorderThickness: false,
         qr: { x: 111, y: 222, magnification: 7 },
         logo: { x: 650, y: 40, widthDots: 120, heightDots: 40 },
         fieldFitDefinitions: {
-          color: { boxWidth: 99, maxChars: 6, min: { fontH: 18, fontW: 9 } },
+          color: { boxWidth: 99, maxChars: 6, borderThickness: 3, min: { fontH: 18, fontW: 9 } },
           productDescription: { boxWidth: 222, maxChars: 20, alignment: "L" }
         },
         fieldPositionOverrides: { color: { x: 600, y: 700 }, productDescription: { x: 40, y: 60 } }
@@ -483,13 +524,16 @@ test("template lab page, preview, and test send stay outside production queue", 
     }
   });
   assert.equal(result.status, 200);
-  assert.equal(result.json.renderedZpl.includes("^FO111,222\n^BQN,2,7^FDLA,PT000086^FS"), true);
-  assert.equal(result.json.renderedZpl.includes("^FO650,40\n^GFA,"), true);
+  assert.equal(result.json.renderedZpl.includes("^FO117,223\n^BQN,2,7^FDLA,PT000086^FS"), true);
+  assert.equal(result.json.renderedZpl.includes("^FO667,44\n^GFA,"), true);
   assert.equal(result.json.metadata.fitDebug.color.boxW, 99);
+  assert.equal(result.json.metadata.fitDebug.color.borderThickness, 3);
   assert.equal(result.json.metadata.fitDebug.productDescription.boxW, 222);
   assert.equal(result.json.renderedZpl.includes("^FO45,64"), true);
   assert.equal(result.json.renderedZpl.includes("^FB226,1,0,L,0"), true);
   assert.equal(result.json.metadata.profile.scaleX, 1.02);
+  assert.equal(result.json.metadata.profile.globalOffsetX, 4);
+  assert.equal(result.json.metadata.profile.borderThickness, 6);
   assert.equal(result.json.metadata.profile.fieldPositionOverrides.color.x, 600);
   assert.equal(result.json.metadata.profile.fieldPositionOverrides.productDescription.x, 40);
 
@@ -512,6 +556,16 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(savedProfile.qr.magnification, 8);
   assert.equal(savedProfile.effectiveFieldFitDefinitions.materialType.boxWidth, 333);
 
+  result = await request("POST", "/api/print/template-lab/profile/reset", {
+    body: { profileKey: "P1:RAW" }
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.json.ok, true);
+  result = await request("GET", "/api/print/template-lab/catalog");
+  const resetProfile = result.json.profiles.find((profile) => profile.key === "P1:RAW");
+  assert.equal(resetProfile.qr.x, undefined);
+  assert.notEqual(resetProfile.effectiveFieldFitDefinitions.materialType.boxWidth, 333);
+
   result = await request("GET", "/api/print/zpl-template-validation");
   assert.equal(result.status, 200);
   assert.equal(result.json.ok, true);
@@ -528,6 +582,16 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.status, 400);
   assert.equal(result.json.error, "LAB_SAMPLE_VALUES_IN_TEMPLATE");
 
+  const staticTemplatePath = zplTemplatePath("RFID-RAW-P2.template.zpl");
+  const staticOriginal = fs.readFileSync(staticTemplatePath, "utf8");
+  fs.writeFileSync(staticTemplatePath, "^XA\n^FDPT000086^FS\n^XZ\n", "utf8");
+  result = await request("POST", "/api/print/template-lab/promote", {
+    body: { template: "RFID-RAW-P2.template.zpl", profileKey: "P2:RAW" }
+  });
+  fs.writeFileSync(staticTemplatePath, staticOriginal, "utf8");
+  assert.equal(result.status, 400);
+  assert.equal(result.json.error, "DYNAMIC_TEMPLATE_REQUIRED");
+
   const promoteTemplatePath = zplTemplatePath("RFID-RAW-P1.template.zpl");
   result = await request("POST", "/api/print/template-lab/promote", {
     body: {
@@ -535,6 +599,9 @@ test("template lab page, preview, and test send stay outside production queue", 
       profileKey: "P1:RAW",
       profileOverrides: {
         qr: { x: 130, y: 240, magnification: 9 },
+        fieldGeometryOverrides: {
+          lotNumber: { x: 100, y: 326, fontHeight: 111, fontWidth: 145, originCommand: "FT" }
+        },
         fieldFitDefinitions: { color: { boxWidth: 111, maxChars: 5 } }
       }
     }
@@ -548,6 +615,7 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(promotedSource.includes("Template Lab Product"), false);
   assert.equal(promotedSource.includes("{{lotNumber}}"), true);
   assert.equal(promotedSource.includes("^FO130,240\n^BQN,2,9^FDLA,{{lotNumber}}^FS"), true);
+  assert.equal(promotedSource.includes("^FT100,326\n^A0N,111,145^FD{{lotNumber}}^FS"), true);
   assert.equal(promotedSource.includes("TEMPLATE_LAB_FIELD_FIT_DEFINITIONS_BASE64:"), true);
   assert.equal(promotedSource.includes("^FB{{colorBoxW}},{{colorMaxLines}},0,{{colorAlignment}},0^FD{{colorText}}"), true);
 
@@ -578,6 +646,47 @@ test("template lab page, preview, and test send stay outside production queue", 
   const afterFiles = fs.existsSync(queueDir) ? fs.readdirSync(queueDir).length : 0;
   assert.equal(afterFiles, beforeFiles);
   serverModule.resetTemplateTestSendFunction();
+});
+
+test("template lab global transform moves origins, scales boxes, and keeps border thickness independent", () => {
+  const source = [
+    "^XA",
+    "^FO10,20^FDone^FS",
+    "^FT30,40^FDtwo^FS",
+    "^FO50,60",
+    "^BQN,2,6^FDLA,{{lotNumber}}^FS",
+    "^FO70,80",
+    "^GFA,1,1,1,80^FS",
+    "^FO5,5^GB100,50,4^FS",
+    "^XZ"
+  ].join("\n");
+
+  const moved = serverModule.applyGlobalTemplateLabTransform(source, {
+    labelWidthDots: 900,
+    labelHeightDots: 1200,
+    globalOffsetX: -100,
+    globalOffsetY: 10
+  });
+  assert.equal(moved.includes("^PW900"), true);
+  assert.equal(moved.includes("^LL1200"), true);
+  assert.equal(moved.includes("^FO-90,30^FDone^FS"), true);
+  assert.equal(moved.includes("^FT-70,50^FDtwo^FS"), true);
+  assert.equal(moved.includes("^FO-50,70\n^BQN,2,6^FDLA,{{lotNumber}}^FS"), true);
+  assert.equal(moved.includes("^FO-30,90\n^GFA,"), true);
+
+  const scaledWithoutBorderScale = serverModule.applyGlobalTemplateLabTransform("^XA\n^FO0,0^GB100,50,4^FS\n^XZ", {
+    globalScaleX: 2,
+    globalScaleY: 2,
+    scaleBorderThickness: false
+  });
+  assert.equal(scaledWithoutBorderScale.includes("^GB200,100,4"), true);
+
+  const scaledWithBorderScale = serverModule.applyGlobalTemplateLabTransform("^XA\n^FO0,0^GB100,50,4^FS\n^XZ", {
+    globalScaleX: 2,
+    globalScaleY: 2,
+    scaleBorderThickness: true
+  });
+  assert.equal(scaledWithBorderScale.includes("^GB200,100,8"), true);
 });
 
 test("print engine routing keeps BarTender default and resolves direct ZPL when requested", () => {

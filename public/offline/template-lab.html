@@ -99,6 +99,10 @@
               Port
               <input id="printerPort" name="printerPort" value="9100" autocomplete="off">
             </label>
+            <div id="proofTargetLine" class="muted-line lab-span-3">Proof target: -</div>
+            <div id="calibrationSummary" class="muted-line lab-span-3">Calibration: -</div>
+            <div id="templateSourceLine" class="muted-line lab-span-3">Editing current production template: -</div>
+            <div id="templateGeometryWarnings" class="muted-line lab-span-3"></div>
           </form>
           </details>
 
@@ -116,12 +120,23 @@
 
           <details class="tuning-card lab-accordion" open>
             <summary>Whole Label Calibration</summary>
-            <p class="field-help">Scale and offset are preview/test calibration values. They shift and scale boxes, field origins, QR, logo, and simple font/field-block commands for Template Lab only. They do not change production printing until a template/profile is deliberately deployed.</p>
+            <p class="field-help">All offsets are printer dots. Whole-label scale and offset move text, boxes, lines, QR, barcode origins, and logo graphics together for Template Lab proofing; they affect production only after explicit promotion.</p>
             <div class="grid lab-tuning-grid">
-              <label class="tune-control" title="Horizontal whole-label multiplier for preview/test rendering only. 1.00 means no horizontal scale.">Scale X<input id="scaleX" type="number" step="0.01" min="0.1"><input id="scaleXRange" type="range" min="0.80" max="1.20" step="0.01"></label>
-              <label class="tune-control" title="Vertical whole-label multiplier for preview/test rendering only. 1.00 means no vertical scale.">Scale Y<input id="scaleY" type="number" step="0.01" min="0.1"><input id="scaleYRange" type="range" min="0.80" max="1.20" step="0.01"></label>
-              <label class="tune-control" title="Horizontal dot offset applied to field origins in preview/test rendering only. Positive moves right.">Offset X<input id="offsetX" type="number" step="1"><input id="offsetXRange" type="range" min="-120" max="120" step="1"></label>
-              <label class="tune-control" title="Vertical dot offset applied to field origins in preview/test rendering only. Positive moves down.">Offset Y<input id="offsetY" type="number" step="1"><input id="offsetYRange" type="range" min="-120" max="120" step="1"></label>
+              <label title="^PW label print width in printer dots.">Label Width Dots<input id="labelWidthDots" type="number" step="1" min="1"></label>
+              <label title="^LL label length in printer dots.">Label Height Dots<input id="labelHeightDots" type="number" step="1" min="1"></label>
+              <label class="tune-control" title="Horizontal whole-label multiplier. 1.00 means no horizontal scale.">Global Scale X<input id="globalScaleX" type="number" step="0.01" min="0.1"><input id="globalScaleXRange" type="range" min="0.50" max="1.50" step="0.01"></label>
+              <label class="tune-control" title="Vertical whole-label multiplier. 1.00 means no vertical scale.">Global Scale Y<input id="globalScaleY" type="number" step="0.01" min="0.1"><input id="globalScaleYRange" type="range" min="0.50" max="1.50" step="0.01"></label>
+              <label class="tune-control" title="Horizontal dot offset applied to the whole label. Positive moves right; negative moves left.">Global Offset X<input id="globalOffsetX" type="number" step="1"><input id="globalOffsetXRange" type="range" min="-500" max="500" step="1"></label>
+              <label class="tune-control" title="Vertical dot offset applied to the whole label. Positive moves down; negative moves up.">Global Offset Y<input id="globalOffsetY" type="number" step="1"><input id="globalOffsetYRange" type="range" min="-500" max="500" step="1"></label>
+              <label title="Optional ^LH horizontal label home in printer dots. Coordinate transforms are still applied.">Label Home X<input id="labelHomeX" type="number" step="1"></label>
+              <label title="Optional ^LH vertical label home in printer dots. Coordinate transforms are still applied.">Label Home Y<input id="labelHomeY" type="number" step="1"></label>
+              <label title="Optional ^LS label shift in printer dots. Use only after coordinate offsets are verified.">Label Shift X<input id="labelShiftX" type="number" step="1"></label>
+              <label title="Optional ^LT top shift in printer dots. Use only after coordinate offsets are verified.">Label Shift Y<input id="labelShiftY" type="number" step="1"></label>
+              <label title="Global outline stroke thickness in printer dots. Blank preserves source template strokes; filled black blocks remain filled.">Border Thickness<input id="borderThickness" type="number" step="1" min="0" max="20"></label>
+              <label class="checkbox-label compact-checkbox" title="When off, global scale changes box size but not outline stroke thickness.">
+                <input id="scaleBorderThickness" type="checkbox">
+                Scale border thickness with label scale
+              </label>
             </div>
           </details>
 
@@ -137,35 +152,46 @@
 
           <details class="tuning-card lab-accordion" open>
             <summary>Logo</summary>
-            <p class="field-help">Logo controls apply to the static ^GFA logo where enabled. If a profile has no logo, these controls are disabled. Use physical proof prints to judge final logo quality.</p>
+            <p class="field-help">Logo controls apply to the static ^GFA logo where enabled. Upload a higher quality PNG to generate a printer-safe ^GFA asset under the controlled ZPL assets folder.</p>
             <div class="grid lab-tuning-grid">
               <label class="tune-control" title="Static logo origin X in printer dots.">Logo X<input id="logoX" type="number" step="1"><input id="logoXRange" type="range" min="0" max="1050" step="1"></label>
               <label class="tune-control" title="Static logo origin Y in printer dots.">Logo Y<input id="logoY" type="number" step="1"><input id="logoYRange" type="range" min="0" max="1450" step="1"></label>
               <label class="tune-control" title="Scales the current 1-bit logo graphic in preview/test rendering. Scaling up can look pixelated.">Logo Scale<input id="logoScale" type="number" step="0.1" min="0.25"><input id="logoScaleRange" type="range" min="0.25" max="4" step="0.05"></label>
               <label title="Explicit rendered logo width in printer dots. Overrides scale when set.">Logo Width Dots<input id="logoWidthDots" type="number" step="1" min="1"></label>
               <label title="Explicit rendered logo height in printer dots. Overrides scale when set.">Logo Height Dots<input id="logoHeightDots" type="number" step="1" min="1"></label>
+              <label title="Black/white conversion threshold, 0-255. Lower keeps fewer dark pixels.">Logo Threshold<input id="logoThreshold" type="number" step="1" min="0" max="255" value="128"></label>
+              <label title="Optional ordered dithering can improve gradients at the cost of extra dots.">Logo Dithering<select id="logoDithering"><option value="none">None</option><option value="ordered">Ordered</option></select></label>
+              <label class="lab-span-2" title="Select a saved PNG or .gfa.zpl logo asset.">Saved Logo Asset<select id="logoAssetSelect"><option value="">Current template logo</option></select></label>
+              <label class="lab-span-2" title="Upload a high-quality PNG to convert to ^GFA.">Upload PRI Logo PNG<input id="logoAssetFile" type="file" accept="image/png"></label>
             </div>
+            <div class="actions">
+              <button id="selectLogoAssetButton" class="secondary" type="button">Select Logo Asset</button>
+              <button id="uploadLogoAssetButton" class="secondary" type="button">Upload / Convert Logo</button>
+            </div>
+            <div id="logoAssetResult" class="muted-line"></div>
           </details>
 
           <details class="tuning-subsection lab-accordion" open>
-            <summary>Field Fit</summary>
-            <p class="field-help">H = font height dots, W = font width dots. Large/medium/small/min are selected by text length; box width controls ^FB; no wrap/no hyphenation is enforced for constrained fields.</p>
+            <summary>Current Template Field Geometry</summary>
+            <p class="field-help">These controls are parsed from the selected production `.template.zpl` file. Boosts multiply the parsed font sizes; X/Y offsets add printer dots to parsed positions.</p>
+            <div class="grid lab-tuning-grid">
+              <label title="Percent multiplier applied to parsed primary text fonts.">Primary Text Font Boost %<input id="primaryFontBoostPercent" type="number" step="1" value="0"></label>
+              <label title="Percent multiplier applied to parsed small text fonts.">Small Text Font Boost %<input id="smallFontBoostPercent" type="number" step="1" value="0"></label>
+              <label title="Percent multiplier applied to parsed product description font.">Product Description Font Boost %<input id="productDescriptionFontBoostPercent" type="number" step="1" value="0"></label>
+              <label title="Percent multiplier applied to parsed tolling font.">Tolling Font Boost %<input id="tollingFontBoostPercent" type="number" step="1" value="0"></label>
+              <label title="Dot offset added to every parsed field X value.">Global Position X Offset<input id="fieldGlobalOffsetX" type="number" step="1" value="0"></label>
+              <label title="Dot offset added to every parsed field Y value.">Global Position Y Offset<input id="fieldGlobalOffsetY" type="number" step="1" value="0"></label>
+            </div>
+            <div class="actions">
+              <button id="applyFieldBoostsButton" class="secondary" type="button">Apply grouped adjustments</button>
+            </div>
+            <div id="selectedFieldPanel" class="selected-field-panel">Selected field: -</div>
             <div id="fieldFitControls" class="field-fit-controls"></div>
           </details>
 
           <details class="tuning-subsection lab-accordion">
-            <summary>Product Description & Field Origins</summary>
-            <p class="field-help">Field X/Y overrides move the nearest fitted-field origin before that placeholder. Use product description X/Y to pull long descriptions back toward the left edge of their box.</p>
-            <div class="grid lab-tuning-grid">
-              <label title="Move fitted color field origin X in printer dots.">Color X<input id="colorX" type="number" step="1"></label>
-              <label title="Move fitted color field origin Y in printer dots.">Color Y<input id="colorY" type="number" step="1"></label>
-              <label title="Move fitted material field origin X in printer dots.">Material X<input id="materialTypeX" type="number" step="1"></label>
-              <label title="Move fitted material field origin Y in printer dots.">Material Y<input id="materialTypeY" type="number" step="1"></label>
-              <label title="Move tolling field origin X in printer dots. Tolling prints only when a value is present.">Tolling X<input id="tollingX" type="number" step="1"></label>
-              <label title="Move tolling field origin Y in printer dots. Tolling prints only when a value is present.">Tolling Y<input id="tollingY" type="number" step="1"></label>
-              <label title="Move product description origin X in printer dots.">Product Description X<input id="productDescriptionX" type="number" step="1"></label>
-              <label title="Move product description origin Y in printer dots.">Product Description Y<input id="productDescriptionY" type="number" step="1"></label>
-            </div>
+            <summary>Advanced Auto-Fit Metadata</summary>
+            <p class="field-help">Auto-fit metadata remains supported for dynamic fitted fields. It is saved with the staged geometry and promoted as token-preserving template metadata when helper tokens are present.</p>
           </details>
 
           <details class="tuning-subsection lab-accordion" open>
@@ -175,13 +201,17 @@
             <div id="profileSaveResult" class="muted-line"></div>
             <div class="actions">
               <button id="loadProfileButton" class="secondary" type="button">Load Profile Values</button>
+              <button id="reloadTemplateButton" class="secondary" type="button">Reload From Current Template</button>
+              <button id="compareTemplateButton" class="secondary" type="button">Compare Current vs Staged</button>
               <button id="exportProfileButton" class="secondary" type="button">Export Profile JSON</button>
               <button id="copyProfileButton" class="secondary" type="button">Copy JSON</button>
               <button id="downloadProfileButton" class="secondary" type="button">Download JSON</button>
               <button id="saveProfileButton" type="button">Save Lab Profile</button>
+              <button id="resetProfileButton" class="secondary" type="button">Reset station profile to template defaults</button>
               <button id="promoteTemplateButton" class="danger" type="button">Promote Dynamic Template to Production</button>
             </div>
             <div id="promoteTemplateResult" class="muted-line"></div>
+            <div id="templateCompareResult" class="muted-line"></div>
           </details>
         </section>
 
@@ -197,6 +227,7 @@
           <div id="sendResult" class="muted-line"></div>
           <div class="actions">
             <button id="sendButton" type="button">Send Proof Print</button>
+            <button id="printCalibrationButton" class="secondary" type="button">Print calibration grid</button>
           </div>
         </section>
       </div>
