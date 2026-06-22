@@ -129,6 +129,15 @@ const DEFAULT_DIRECT_ZPL_ENABLED_SCOPES = "P1:RAW";
 const DEFAULT_DIRECT_ZPL_RAW_TEMPLATE_PATHS = Object.freeze(Object.fromEntries(
   RAW_STATIONS.map((station) => [station, path.join(ZPL_TEMPLATE_SOURCE_DIR, rawTemplateForStation(station))])
 ));
+
+function sha256Hex(value) {
+  return crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex");
+}
+
+function buildTemplateLabRenderId(templateName, profileKey, renderedZpl, renderedAt = isoNow()) {
+  const digest = sha256Hex(`${templateName}|${profileKey}|${renderedAt}|${renderedZpl}`);
+  return `tl-${renderedAt.replace(/[^0-9]/g, "").slice(0, 14)}-${digest.slice(0, 12)}`;
+}
 const DEFAULT_DIRECT_ZPL_FG_TEMPLATE_PATHS = Object.freeze(Object.fromEntries(
   FG_STATIONS.map((station) => [station, path.join(ZPL_TEMPLATE_SOURCE_DIR, fgTemplateForStation(station))])
 ));
@@ -4278,6 +4287,11 @@ function buildProfileOverridesFromInput(input = {}) {
     overrides.bottomGrid = deepMergePlainObjects(overrides.bottomGrid || {}, bottomGrid);
   }
 
+  const borderVisibility = parseJsonObjectField(input.borderVisibility, "borderVisibility");
+  if (Object.keys(borderVisibility).length) {
+    overrides.borderVisibility = deepMergePlainObjects(overrides.borderVisibility || {}, borderVisibility);
+  }
+
   return overrides;
 }
 
@@ -4489,6 +4503,7 @@ function parseGraphicBoxCommand(command, position) {
     thickness: numberOrNull(parts[2]),
     color: parts[3] || "",
     rounding: numberOrNull(parts[4]),
+    originCommandStart: position?.commandStart ?? null,
     commandStart: command.start,
     commandEnd: command.end,
     raw: command.raw
@@ -4505,6 +4520,7 @@ function normalizeBottomGridProfile(value = {}) {
   setIfNumber(output, "borderThickness", input.borderThickness ?? input.thickness ?? input.bottomGridBorderThickness, { min: 0, max: 20, integer: true });
   setIfNumber(output, "columnCount", input.columnCount ?? input.columns ?? input.bottomGridColumnCount, { min: 1, max: 24, integer: true });
   setIfNumber(output, "columnLineThickness", input.columnLineThickness ?? input.bottomGridColumnLineThickness, { min: 0, max: 20, integer: true });
+  if (input.visible !== undefined) output.visible = booleanFromInput(input.visible) !== false;
   return output;
 }
 
@@ -4570,8 +4586,9 @@ function detectBottomGridFromBorders(borders = [], label = {}) {
     return bw === 0 && bh >= Math.max(20, height * 0.45) && bx > x + 8 && bx < x + width - 8;
   });
   const columnCount = Math.max(1, internalVerticals.length + 1);
-  const start = Math.min(...bottomCandidates.map((border) => Number(border.commandStart)).filter(Number.isFinite));
-  const end = Math.max(...bottomCandidates.map((border) => Number(border.commandEnd)).filter(Number.isFinite));
+  const rangeBorders = rectangle ? [rectangle, ...internalVerticals] : bottomCandidates;
+  const start = Math.min(...rangeBorders.map((border) => Number(border.commandStart)).filter(Number.isFinite));
+  const end = Math.max(...rangeBorders.map((border) => Number(border.commandEnd)).filter(Number.isFinite));
   return {
     x: Math.round(x),
     y: Math.round(y),
@@ -4617,6 +4634,96 @@ function fittedFieldKeyFromToken(tokenName) {
   return String(tokenName || "").endsWith("Text")
     ? String(tokenName).slice(0, -"Text".length)
     : "";
+}
+
+function templateLabAreaFromTokenName(tokenName) {
+  const token = String(tokenName || "");
+  if (token === "lotNumber") return "lot";
+  if (token === "boxNumber") return "box";
+  if (token === "materialType" || /^materialType/.test(token)) return "materialType";
+  if (token === "color" || /^color/.test(token)) return "color";
+  if (token === "productDescription" || /^productDescription/.test(token)) return "productDescription";
+  if (token === "po") return "po";
+  if (token === "pounds") return "pounds";
+  if (token === "tolling" || /^tolling/.test(token)) return "tolling";
+  return token ? token : "unknown";
+}
+
+function templateLabAreaLabel(area) {
+  return {
+    lot: "Lot Number",
+    box: "Box Number",
+    materialType: "Material Type",
+    color: "Color",
+    productDescription: "Product Description",
+    po: "PO",
+    pounds: "Pounds",
+    tolling: "Tolling",
+    bottomGrid: "Bottom Grid",
+    qr: "QR",
+    logo: "Logo",
+    barcode: "Barcode"
+  }[area] || area || "Unknown";
+}
+
+function templateLabControlTokenForArea(area) {
+  return {
+    lot: "lotNumber",
+    box: "boxNumber",
+    materialType: "materialTypeText",
+    color: "colorText",
+    productDescription: "productDescriptionText",
+    po: "po",
+    pounds: "pounds",
+    tolling: "tollingText"
+  }[area] || "";
+}
+
+function templateLabLinkedControlsForItem(item = {}) {
+  const area = item.area;
+  if (area === "qr") return ["qrX", "qrY", "qrMagnification"];
+  if (area === "logo") return ["logoX", "logoY", "logoScale", "logoWidthDots", "logoHeightDots"];
+  if (area === "bottomGrid") {
+    return ["bottomGridX", "bottomGridY", "bottomGridWidth", "bottomGridHeight", "bottomGridBorderThickness", "bottomGridColumnCount", "bottomGridColumnLineThickness"];
+  }
+  const tokenName = item.tokenName || templateLabControlTokenForArea(area);
+  if (!tokenName) return [];
+  const prefix = `fieldGeo_${String(tokenName).replace(/[^A-Za-z0-9_:-]/g, "_")}_`;
+  const controls = [`${prefix}X`, `${prefix}Y`];
+  if (item.type === "text") {
+    controls.push(`${prefix}FontHeight`, `${prefix}FontWidth`, `${prefix}FieldWidth`);
+  } else if (item.type === "border" || item.type === "background") {
+    controls.push(`${prefix}BorderThickness`, `${prefix}BorderWidth`, `${prefix}BorderHeight`);
+  } else {
+    controls.push(`${prefix}FontHeight`, `${prefix}FontWidth`, `${prefix}FieldWidth`, `${prefix}BorderThickness`, `${prefix}BorderWidth`, `${prefix}BorderHeight`);
+  }
+  return controls;
+}
+
+function normalizeTemplateLabBorderVisibility(value = {}) {
+  const input = isPlainObject(value) ? value : {};
+  const output = {};
+  [
+    "lot",
+    "box",
+    "materialType",
+    "color",
+    "productDescription",
+    "po",
+    "pounds",
+    "tolling",
+    "bottomGrid",
+    "logoGuide",
+    "qrGuide"
+  ].forEach((key) => {
+    if (input[key] !== undefined) output[key] = booleanFromInput(input[key]) !== false;
+  });
+  return output;
+}
+
+function templateLabBorderVisible(profile = {}, key) {
+  const visibility = normalizeTemplateLabBorderVisibility(profile?.borderVisibility || {});
+  return visibility[key] !== false;
 }
 
 function resolveFieldFitNumeric(fieldFitDefinitions, fieldKey, property, fallback) {
@@ -4794,7 +4901,9 @@ function parseTemplateLabSourceGeometry(sourceTemplate, options = {}) {
       width: related.width,
       height: related.height,
       thickness: related.thickness,
+      originCommandStart: related.originCommandStart,
       commandStart: related.commandStart,
+      commandEnd: related.commandEnd,
       raw: related.raw
     } : null;
   }
@@ -4825,6 +4934,7 @@ function getTemplateLabTemplateGeometryPayload(input = {}) {
     ok: true,
     templateName: selected.name,
     templatePath: selected.templatePath,
+    productionTemplateSha256: sha256Hex(sourceTemplate),
     profileKey,
     parsedAt: parsed.parsedAt,
     fields: merged.fields,
@@ -4939,6 +5049,27 @@ function replaceFirstInSlice(text, sliceStart, sliceEnd, pattern, replacer) {
   return `${source.slice(0, absoluteStart)}${replacer(match)}${source.slice(absoluteEnd)}`;
 }
 
+function replaceNearestInSlice(text, sliceStart, sliceEnd, pattern, anchorIndex, replacer) {
+  const source = String(text || "");
+  const slice = source.slice(sliceStart, sliceEnd);
+  const matches = Array.from(slice.matchAll(pattern));
+  if (!matches.length) return source;
+  const anchor = Number.isFinite(Number(anchorIndex)) ? Number(anchorIndex) : sliceStart;
+  const match = matches
+    .map((candidate) => {
+      const absoluteStart = sliceStart + candidate.index;
+      const absoluteEnd = absoluteStart + candidate[0].length;
+      return {
+        candidate,
+        absoluteStart,
+        absoluteEnd,
+        score: Math.min(Math.abs(absoluteStart - anchor), Math.abs(absoluteEnd - anchor))
+      };
+    })
+    .sort((a, b) => a.score - b.score)[0];
+  return `${source.slice(0, match.absoluteStart)}${replacer(match.candidate)}${source.slice(match.absoluteEnd)}`;
+}
+
 function coerceOriginCommand(value, fallback = "FO") {
   const command = String(value || fallback || "FO").trim().toUpperCase();
   return command === "FT" ? "FT" : "FO";
@@ -4999,7 +5130,7 @@ function applySingleFieldGeometryOverride(source, tokenName, geometry = {}) {
   if (hasBorderEdit) {
     const refreshed = sourceWindowAroundToken(output, tokenName, 300, 300);
     if (refreshed) {
-      output = replaceFirstInSlice(output, refreshed.start, refreshed.end, /\^GB(-?\d+),(-?\d+),(-?\d+)((?:,[^^\r\n]*)?)/, (match) => {
+      output = replaceNearestInSlice(output, refreshed.start, refreshed.end, /\^GB(-?\d+),(-?\d+),(-?\d+)((?:,[^^\r\n]*)?)/g, refreshed.tokenIndex, (match) => {
         const width = Number.isFinite(borderWidth) ? Math.round(borderWidth) : match[1];
         const height = Number.isFinite(borderHeight) ? Math.round(borderHeight) : match[2];
         const thickness = Number.isFinite(borderThickness) ? clampStrokeThickness(borderThickness) : match[3];
@@ -5035,11 +5166,13 @@ function buildFieldFitDefinitionsFromGeometry(fieldGeometryOverrides = {}) {
 }
 
 function bottomGridProfileHasControls(profile = {}) {
-  return isPlainObject(profile?.bottomGrid) && Object.keys(normalizeBottomGridProfile(profile.bottomGrid)).length > 0;
+  return (isPlainObject(profile?.bottomGrid) && Object.keys(normalizeBottomGridProfile(profile.bottomGrid)).length > 0) ||
+    templateLabBorderVisible(profile, "bottomGrid") === false;
 }
 
 function buildBottomGridZpl(bottomGrid = {}) {
   const grid = normalizeBottomGridProfile(bottomGrid);
+  if (grid.visible === false) return "^FX Template Lab Bottom Grid/Footer Row hidden";
   const x = Number.isFinite(grid.x) ? grid.x : 10;
   const y = Number.isFinite(grid.y) ? grid.y : 986;
   const width = Number.isFinite(grid.width) ? grid.width : 737;
@@ -5084,7 +5217,8 @@ function applyBottomGridOverrideToZpl(zpl, profile = {}) {
     height: override.height ?? detected.height ?? 110,
     borderThickness: override.borderThickness ?? detected.borderThickness ?? 4,
     columnCount: override.columnCount ?? detected.columnCount ?? 5,
-    columnLineThickness: override.columnLineThickness ?? detected.columnLineThickness ?? override.borderThickness ?? detected.borderThickness ?? 4
+    columnLineThickness: override.columnLineThickness ?? detected.columnLineThickness ?? override.borderThickness ?? detected.borderThickness ?? 4,
+    visible: templateLabBorderVisible(profile, "bottomGrid")
   };
   const replacement = `${buildBottomGridZpl(bottomGrid)}\n`;
   if (Number.isFinite(Number(detected.commandStart)) && Number.isFinite(Number(detected.commandEnd))) {
@@ -5095,6 +5229,46 @@ function applyBottomGridOverrideToZpl(zpl, profile = {}) {
   const insertAt = source.search(/\^PQ|\^XZ/);
   if (insertAt >= 0) return `${source.slice(0, insertAt)}${replacement}${source.slice(insertAt)}`;
   return `${source}\n${replacement}`;
+}
+
+function removeZplRanges(source, ranges = []) {
+  const text = String(source || "");
+  const normalized = ranges
+    .map((range) => ({
+      start: Math.max(0, Math.min(text.length, Number(range.start))),
+      end: Math.max(0, Math.min(text.length, Number(range.end)))
+    }))
+    .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end > range.start)
+    .sort((a, b) => b.start - a.start);
+  let output = text;
+  for (const range of normalized) {
+    output = `${output.slice(0, range.start)}${output.slice(range.end)}`;
+  }
+  return output;
+}
+
+function applyTemplateLabBorderVisibilityOverrides(zpl, profile = {}) {
+  const visibility = normalizeTemplateLabBorderVisibility(profile?.borderVisibility || {});
+  if (!Object.keys(visibility).some((key) => visibility[key] === false && key !== "bottomGrid" && key !== "logoGuide" && key !== "qrGuide")) {
+    return String(zpl || "");
+  }
+
+  const source = String(zpl || "");
+  const parsed = parseTemplateLabSourceGeometry(source);
+  const bottomGrid = parsed.bottomGrid || {};
+  const bottomStart = Number(bottomGrid.commandStart);
+  const bottomEnd = Number(bottomGrid.commandEnd);
+  const ranges = [];
+  for (const field of parsed.fields || []) {
+    const area = templateLabAreaFromTokenName(field.tokenName);
+    if (visibility[area] !== false || !field.border) continue;
+    const borderStart = Number(field.border.originCommandStart ?? field.border.commandStart);
+    const borderEnd = zplRegionEndAfterFieldSeparator(source, Number(field.border.commandEnd ?? field.border.commandStart));
+    if (!Number.isFinite(borderStart) || !Number.isFinite(borderEnd)) continue;
+    if (Number.isFinite(bottomStart) && Number.isFinite(bottomEnd) && borderStart >= bottomStart && borderStart <= bottomEnd) continue;
+    ranges.push({ start: borderStart, end: borderEnd });
+  }
+  return ranges.length ? removeZplRanges(source, ranges) : source;
 }
 
 function applyFieldGeometryOverridesToTemplateSource(templateText, fieldGeometryOverrides = {}) {
@@ -5651,7 +5825,8 @@ function collectChangedTemplateLabSections(overrides = {}) {
     ["fieldGeometry", ["fieldGeometryOverrides"]],
     ["fieldFit", ["fieldFitDefinitions"]],
     ["fieldPosition", ["fieldPositionOverrides"]],
-    ["bottomGrid", ["bottomGrid"]]
+    ["bottomGrid", ["bottomGrid"]],
+    ["borderVisibility", ["borderVisibility"]]
   ];
   for (const [section, keys] of sectionKeys) {
     if (keys.some((key) => source[key] !== undefined)) sections.push(section);
@@ -5728,6 +5903,7 @@ function applyTemplateLabDynamicSourceOverrides(sourceTemplate, profile = {}) {
   output = applyQrOverrideToRenderedZpl(output, profile);
   output = applyLogoOverrideToRenderedZpl(output, profile);
   output = applyBottomGridOverrideToZpl(output, profile);
+  output = applyTemplateLabBorderVisibilityOverrides(output, profile);
   output = applyFieldFitDefinitionsToTemplateSource(output, fieldFitDefinitions);
   const promotedFieldFitDefinitions = scaleTemplateLabFieldFitDefinitionsForPromotion(fieldFitDefinitions, profile);
   output = upsertTemplateFieldFitDefinitionsComment(output, promotedFieldFitDefinitions);
@@ -5763,6 +5939,16 @@ function promoteTemplateLabDynamicTemplate(body = {}) {
   }
 
   const sourceTemplate = loadZplTemplate(selected.templatePath);
+  const snapshot = isPlainObject(body.renderSnapshot) ? body.renderSnapshot : body;
+  const providedDynamicTemplate = typeof snapshot.dynamicTemplateZpl === "string" ? snapshot.dynamicTemplateZpl : "";
+  const providedDynamicDigest = trimString(snapshot.dynamicTemplateSha256 || snapshot.dynamicTemplateZplSha256);
+  if (providedDynamicTemplate && providedDynamicDigest && sha256Hex(providedDynamicTemplate) !== providedDynamicDigest) {
+    throw httpError(400, "DYNAMIC_TEMPLATE_DIGEST_MISMATCH", "Promotion rejected because the provided dynamic template digest does not match the current render snapshot.", {
+      template: selected.name,
+      profileKey,
+      renderId: trimString(snapshot.renderId)
+    });
+  }
   const tokensBefore = collectDynamicZplTokens(sourceTemplate);
   if (!tokensBefore.length) {
     throw httpError(400, "DYNAMIC_TEMPLATE_REQUIRED", "Production promotion requires a dynamic .template.zpl source with {{...}} tokens.", {
@@ -5771,7 +5957,8 @@ function promoteTemplateLabDynamicTemplate(body = {}) {
     });
   }
 
-  const updatedTemplate = applyTemplateLabDynamicSourceOverrides(sourceTemplate, profile);
+  const updatedTemplate = providedDynamicTemplate || applyTemplateLabDynamicSourceOverrides(sourceTemplate, profile);
+  const promotedDigest = sha256Hex(updatedTemplate);
   const remainingTokens = collectDynamicZplTokens(updatedTemplate);
   if (remainingTokens.length === 0) {
     throw httpError(400, "DYNAMIC_TEMPLATE_TOKENS_MISSING", "Promotion rejected because the updated template has no {{...}} tokens.", {
@@ -5847,16 +6034,21 @@ function promoteTemplateLabDynamicTemplate(body = {}) {
     });
   }
   const changedProfileSections = collectChangedTemplateLabSections(inlineOverrides);
-  const payloadBytes = Number(body.renderedPayloadBytes) || Buffer.byteLength(updatedTemplate, "utf8");
+  const payloadBytes = Number(snapshot.renderedPayloadBytes || snapshot.payloadBytes) || Buffer.byteLength(updatedTemplate, "utf8");
+  const promotedBytes = Buffer.byteLength(updatedTemplate, "utf8");
+  const renderId = trimString(snapshot.renderId);
 
   logInfo("template_lab_dynamic_template_promoted", {
     template: selected.name,
     profileKey: profile.key,
     templatePath: selected.templatePath,
     backupPath,
+    renderId,
+    promotedDigest,
     tokenCountBefore: tokensBefore.length,
     tokenCountAfter: remainingTokens.length,
     payloadBytes,
+    promotedBytes,
     changedProfileSections,
     changedFields: Object.keys(profile.fieldGeometryOverrides || {})
   });
@@ -5865,9 +6057,13 @@ function promoteTemplateLabDynamicTemplate(body = {}) {
     ok: true,
     template: selected.name,
     profileKey: profile.key,
+    renderId,
     templatePath: selected.templatePath,
     updatedTemplatePath: selected.templatePath,
     backupPath,
+    digest: promotedDigest,
+    promotedDigest,
+    dynamicTemplateSha256: promotedDigest,
     tokenCount: remainingTokens.length,
     tokenCountBefore: tokensBefore.length,
     tokenCountAfter: remainingTokens.length,
@@ -5875,7 +6071,8 @@ function promoteTemplateLabDynamicTemplate(body = {}) {
     changedFields: Object.keys(profile.fieldGeometryOverrides || {}),
     changedProfileSections,
     payloadBytes,
-    bytes: Buffer.byteLength(updatedTemplate, "utf8"),
+    bytes: promotedBytes,
+    promotedBytes,
     verification: {
       unreplacedTokens: [],
       rfidCommandsUnchanged: true,
@@ -6042,7 +6239,7 @@ function parseZplCommandStream(zpl) {
     let next = absoluteStart + 3;
     while (next < text.length && text[next] !== "^" && text[next] !== "~") next += 1;
     const params = text.slice(absoluteStart + 3, next).replace(/\r?\n/g, "");
-    commands.push({ prefix, code, params, raw: `${prefix}${code}${params}` });
+    commands.push({ prefix, code, params, raw: `${prefix}${code}${params}`, start: absoluteStart, end: next });
     index = next;
   }
   return commands;
@@ -6064,12 +6261,204 @@ function appendSvgText(elements, { x, y, text, fontH, fontW, fieldBlock, reverse
   elements.push(`<text x="${Math.round(textX)}" y="${Math.round(y)}" font-family="${family}" font-size="${Math.max(5, Math.round(fontH || 24))}" font-weight="700" text-anchor="${anchor}" fill="${reverse ? "#ffffff" : "#111827"}" data-font-width="${Math.round(fontW || 12)}">${escapeXml(text)}</text>`);
 }
 
-function buildApproximateZplPreview(renderedZpl, profile = {}) {
+function templateLabPreviewAreaFromText(text, sampleData = {}) {
+  const value = String(text || "").replace(/^LA,/, "").trim();
+  if (!value) return "";
+  const normalized = value.toUpperCase();
+  const candidates = [
+    ["lot", sampleData.lotNumber],
+    ["box", sampleData.boxNumber],
+    ["pounds", sampleData.pounds],
+    ["materialType", sampleData.materialType],
+    ["color", sampleData.color],
+    ["po", sampleData.po],
+    ["productDescription", sampleData.productDescription || sampleData.productName],
+    ["tolling", sampleData.tolling]
+  ];
+  for (const [area, source] of candidates) {
+    const sourceValue = String(source || "").trim().toUpperCase();
+    if (!sourceValue) continue;
+    if (normalized === sourceValue || sourceValue.startsWith(normalized) || normalized.startsWith(sourceValue)) return area;
+  }
+  return "";
+}
+
+function previewItemGeometry(item = {}) {
+  return {
+    id: item.id,
+    label: item.label || item.id,
+    type: item.type || "unknown",
+    area: item.area || "unknown",
+    x: Number.isFinite(Number(item.x)) ? Math.round(Number(item.x)) : null,
+    y: Number.isFinite(Number(item.y)) ? Math.round(Number(item.y)) : null,
+    width: Number.isFinite(Number(item.width)) ? Math.round(Number(item.width)) : null,
+    height: Number.isFinite(Number(item.height)) ? Math.round(Number(item.height)) : null,
+    zplSource: item.zplSource || item.commandType || null,
+    commandType: item.commandType || null,
+    linkedControls: item.linkedControls || [],
+    tokenName: item.tokenName || null
+  };
+}
+
+function previewSvgObjectAttributes(item = {}) {
+  const linkedControls = item.linkedControls || [];
+  return [
+    "class=\"preview-object\"",
+    `data-area="${escapeXml(item.area || "unknown")}"`,
+    `data-object-id="${escapeXml(item.id || "")}"`,
+    `data-control-key="${escapeXml(linkedControls[0] || "")}"`,
+    "tabindex=\"0\"",
+    "role=\"button\""
+  ].join(" ");
+}
+
+function assignPreviewObjectId(item, counts, baseId) {
+  const base = String(baseId || `${item.area || "unknown"}.${item.type || "object"}`).replace(/[^A-Za-z0-9_.:-]/g, ".");
+  counts[base] = (counts[base] || 0) + 1;
+  item.id = counts[base] === 1 ? base : `${base}.${counts[base]}`;
+  return item.id;
+}
+
+function previewItemSvg(item = {}, profile = {}) {
+  const attrs = previewSvgObjectAttributes(item);
+  const title = `<title>${escapeXml(item.label || item.id || "Preview object")}: x=${Math.round(Number(item.x) || 0)}, y=${Math.round(Number(item.y) || 0)}, w=${Math.round(Number(item.width) || 0)}, h=${Math.round(Number(item.height) || 0)}</title>`;
+  const stroke = item.type === "background" ? "#111827" : "#111827";
+  const strokeWidth = Math.max(1, Math.round(Number(item.thickness) || 1));
+  if (item.kind === "line") {
+    return `<g ${attrs}>${title}<line x1="${Math.round(item.x1)}" y1="${Math.round(item.y1)}" x2="${Math.round(item.x2)}" y2="${Math.round(item.y2)}" stroke="${stroke}" stroke-width="${strokeWidth}"/></g>`;
+  }
+  if (item.kind === "rect") {
+    return `<g ${attrs}>${title}<rect x="${Math.round(item.x)}" y="${Math.round(item.y)}" width="${Math.abs(Math.round(item.width || 0))}" height="${Math.abs(Math.round(item.height || 0))}" fill="${item.type === "background" ? "#111827" : "none"}" stroke="${stroke}" stroke-width="${strokeWidth}"/></g>`;
+  }
+  if (item.kind === "qr") {
+    const guideStroke = templateLabBorderVisible(profile, "qrGuide") ? "#111827" : "transparent";
+    const size = Math.max(1, Math.round(item.width || 42));
+    return [
+      `<g ${attrs}>${title}`,
+      `<rect x="${Math.round(item.x)}" y="${Math.round(item.y)}" width="${size}" height="${size}" fill="#ffffff" stroke="${guideStroke}" stroke-width="3"/>`,
+      `<path d="M${Math.round(item.x + 8)},${Math.round(item.y + 8)}h18v18h-18z M${Math.round(item.x + size - 28)},${Math.round(item.y + 8)}h18v18h-18z M${Math.round(item.x + 8)},${Math.round(item.y + size - 28)}h18v18h-18z" fill="#111827"/>`,
+      `<text x="${Math.round(item.x + (size / 2))}" y="${Math.round(item.y + size + 18)}" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="800" text-anchor="middle" fill="#111827">QR ${escapeXml(item.text || "")}</text>`,
+      "</g>"
+    ].join("");
+  }
+  if (item.kind === "barcode") {
+    const width = Math.max(1, Math.round(item.width || 120));
+    const height = Math.max(1, Math.round(item.height || 45));
+    const lines = [];
+    for (let offset = 4; offset < width; offset += 8) {
+      lines.push(`<line x1="${Math.round(item.x + offset)}" y1="${Math.round(item.y + 3)}" x2="${Math.round(item.x + offset)}" y2="${Math.round(item.y + height - 3)}" stroke="#111827" stroke-width="${offset % 16 === 4 ? 2 : 1}"/>`);
+    }
+    return `<g ${attrs}>${title}<rect x="${Math.round(item.x)}" y="${Math.round(item.y)}" width="${width}" height="${height}" fill="#f8fafc" stroke="#111827" stroke-width="1"/>${lines.join("")}</g>`;
+  }
+  if (item.kind === "logo") {
+    const guideStroke = templateLabBorderVisible(profile, "logoGuide") ? "#25408f" : "transparent";
+    return [
+      `<g ${attrs}>${title}`,
+      `<rect x="${Math.round(item.x)}" y="${Math.round(item.y)}" width="${Math.round(item.width)}" height="${Math.round(item.height)}" fill="#ffffff" stroke="${guideStroke}" stroke-width="2"/>`,
+      `<text x="${Math.round(item.x + (item.width / 2))}" y="${Math.round(item.y + (item.height / 2) + 5)}" font-family="Arial, Helvetica, sans-serif" font-size="${Math.max(8, Math.round(item.height / 3))}" font-weight="900" text-anchor="middle" fill="#25408f">PRI Logo</text>`,
+      "</g>"
+    ].join("");
+  }
+  if (item.kind === "text") {
+    const width = Number(item.fieldBlock?.width);
+    const alignment = String(item.fieldBlock?.alignment || "L").toUpperCase();
+    let anchor = "start";
+    let textX = item.x;
+    if (Number.isFinite(width) && alignment === "C") {
+      anchor = "middle";
+      textX = item.x + (width / 2);
+    } else if (Number.isFinite(width) && alignment === "R") {
+      anchor = "end";
+      textX = item.x + width;
+    }
+    return `<g ${attrs}>${title}<text x="${Math.round(textX)}" y="${Math.round(item.baselineY)}" font-family="Arial, Helvetica, sans-serif" font-size="${Math.max(5, Math.round(item.fontH || 24))}" font-weight="700" text-anchor="${anchor}" fill="${item.reverse ? "#ffffff" : "#111827"}" data-font-width="${Math.round(item.fontW || 12)}">${escapeXml(item.text)}</text></g>`;
+  }
+  return "";
+}
+
+function assignPreviewSemanticBorders(items = [], labelHeight) {
+  const counts = {};
+  const borderItems = items.filter((item) => item.commandType === "^GB");
+  const bottomGrid = detectBottomGridFromBorders(borderItems, { labelHeightDots: labelHeight });
+  const gridItems = [];
+  if (bottomGrid) {
+    borderItems.forEach((item) => {
+      const x = Number(item.x);
+      const y = Number(item.y);
+      const width = Number(item.width) || 0;
+      const height = Number(item.height) || 0;
+      const inGrid = x >= bottomGrid.x - 4 && x <= bottomGrid.x + bottomGrid.width + 4 &&
+        y >= bottomGrid.y - 4 && y <= bottomGrid.y + bottomGrid.height + 4;
+      if (!inGrid) return;
+      item.area = "bottomGrid";
+      item.type = "grid";
+      if (width === 0 || height === 0) {
+        gridItems.push(item);
+        item.id = `bottomGrid.columnLine.${gridItems.length}`;
+        item.label = `Bottom Grid Column Line ${gridItems.length}`;
+      } else {
+        item.id = "bottomGrid.outer";
+        item.label = "Bottom Grid Outer Border";
+      }
+    });
+  }
+
+  const textItems = items.filter((item) => item.kind === "text" && item.area && item.area !== "unknown");
+  borderItems.forEach((border) => {
+    if (border.id) return;
+    let best = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    textItems.forEach((text) => {
+      const borderCenterX = Number(border.x) + ((Number(border.width) || 0) / 2);
+      const borderCenterY = Number(border.y) + ((Number(border.height) || 0) / 2);
+      const textCenterX = Number(text.x) + ((Number(text.width) || 0) / 2);
+      const textCenterY = Number(text.y) + ((Number(text.height) || 0) / 2);
+      const contains = textCenterX >= Number(border.x) - 20 &&
+        textCenterX <= Number(border.x) + Math.abs(Number(border.width) || 0) + 20 &&
+        text.baselineY >= Number(border.y) - 20 &&
+        text.baselineY <= Number(border.y) + Math.abs(Number(border.height) || 0) + Math.max(20, Number(text.fontH) || 0);
+      const score = Math.abs(borderCenterX - textCenterX) + Math.abs(borderCenterY - textCenterY) + (contains ? 0 : 400);
+      if (score < bestScore) {
+        best = text;
+        bestScore = score;
+      }
+    });
+    if (best && bestScore < 650) {
+      border.area = best.area;
+      border.tokenName = best.tokenName;
+      border.type = border.type === "background" ? "background" : "border";
+      const role = border.type === "background" && border.area === "tolling" ? "background" : "border";
+      assignPreviewObjectId(border, counts, `${border.area}.${role}`);
+      border.label = `${templateLabAreaLabel(border.area)} ${role === "background" ? "Background" : "Border"}`;
+    }
+  });
+
+  items.forEach((item) => {
+    if (item.id) return;
+    if (item.kind === "text") assignPreviewObjectId(item, counts, `${item.area || "unknown"}.text`);
+    else if (item.kind === "qr") item.id = "qr";
+    else if (item.kind === "logo") item.id = "logo";
+    else if (item.kind === "barcode") assignPreviewObjectId(item, counts, "barcode");
+    else assignPreviewObjectId(item, counts, `${item.area || "unknown"}.${item.type || "object"}`);
+  });
+
+  items.forEach((item) => {
+    item.linkedControls = templateLabLinkedControlsForItem(item);
+    if (!item.label) {
+      const role = item.id && item.id.includes(".") ? item.id.split(".").slice(1).join(" ") : item.type;
+      item.label = `${templateLabAreaLabel(item.area)} ${role || "Object"}`;
+    }
+  });
+
+  return { bottomGrid };
+}
+
+function buildApproximateZplPreview(renderedZpl, profile = {}, options = {}) {
   const commands = parseZplCommandStream(renderedZpl);
   let labelWidth = Number(profile?.labelWidthDots) || 812;
   let labelHeight = Number(profile?.labelHeightDots) || 1218;
-  const elements = [];
-  const previewBorders = [];
+  const sampleData = options.sampleData || {};
+  const items = [];
   const unsupported = new Set();
   const supportedOrIgnored = new Set(["XA", "XZ", "FX", "RS", "RR", "SZ", "JM", "MC", "PM", "JS", "JZ", "LH", "LR", "CI", "PW", "FO", "FT", "GB", "A0", "FB", "FD", "FS", "FR", "BQ", "B3", "BY", "GF", "PQ", "RF"]);
   const state = {
@@ -6106,23 +6495,26 @@ function buildApproximateZplPreview(renderedZpl, profile = {}) {
       const width = Number(widthRaw) || 0;
       const height = Number(heightRaw) || 0;
       const thickness = Math.max(1, Number(thicknessRaw) || 1);
-      previewBorders.push({
-        x: state.x,
-        y: state.y,
+      const filled = width !== 0 && height !== 0 && thickness >= Math.min(Math.abs(width), Math.abs(height)) * 0.45;
+      const item = {
+        kind: width === 0 || height === 0 ? "line" : "rect",
+        type: filled ? "background" : "border",
+        area: "unknown",
+        x: Math.min(state.x, state.x + width),
+        y: Math.min(state.y, state.y + height),
         width,
         height,
+        x1: state.x,
+        y1: state.y,
+        x2: state.x + width,
+        y2: state.y + height,
         thickness,
+        commandType: "^GB",
+        zplSource: command.raw,
         commandStart: command.start,
         commandEnd: command.end
-      });
-      if (width === 0 || height === 0) {
-        const x2 = state.x + width;
-        const y2 = state.y + height;
-        elements.push(`<line x1="${Math.round(state.x)}" y1="${Math.round(state.y)}" x2="${Math.round(x2 || state.x)}" y2="${Math.round(y2 || state.y)}" stroke="#111827" stroke-width="${thickness}"/>`);
-      } else {
-        const filled = thickness >= Math.min(Math.abs(width), Math.abs(height)) * 0.45;
-        elements.push(`<rect x="${Math.round(state.x)}" y="${Math.round(state.y)}" width="${Math.abs(Math.round(width))}" height="${Math.abs(Math.round(height))}" fill="${filled ? "#111827" : "none"}" stroke="#111827" stroke-width="${thickness}"/>`);
-      }
+      };
+      items.push(item);
     } else if (command.code === "A0") {
       const parts = String(command.params || "").split(",");
       const fontH = Number(parts[1]);
@@ -6152,33 +6544,75 @@ function buildApproximateZplPreview(renderedZpl, profile = {}) {
       const width = bytesPerRow ? bytesPerRow * 8 : Number(profile?.logo?.widthDots) || 96;
       const height = bytesPerRow && total ? Math.max(1, Math.round(total / bytesPerRow)) : Number(profile?.logo?.heightDots) || 32;
       state.logoDetected = true;
-      elements.push(`<rect x="${Math.round(state.x)}" y="${Math.round(state.y)}" width="${Math.round(width)}" height="${Math.round(height)}" fill="#ffffff" stroke="#25408f" stroke-width="2"/>`);
-      elements.push(`<text x="${Math.round(state.x + (width / 2))}" y="${Math.round(state.y + (height / 2) + 5)}" font-family="Arial, Helvetica, sans-serif" font-size="${Math.max(8, Math.round(height / 3))}" font-weight="900" text-anchor="middle" fill="#25408f">PRI Logo</text>`);
+      items.push({
+        kind: "logo",
+        type: "logo",
+        area: "logo",
+        x: state.x,
+        y: state.y,
+        width,
+        height,
+        label: "Logo",
+        commandType: "^GFA",
+        zplSource: command.raw
+      });
     } else if (command.code === "FD") {
       const data = command.params;
       if (state.barcode?.type === "QR") {
         const size = Math.max(42, state.barcode.magnification * 29);
         state.qrDetected = true;
-        elements.push(`<rect x="${Math.round(state.x)}" y="${Math.round(state.y)}" width="${size}" height="${size}" fill="#ffffff" stroke="#111827" stroke-width="3"/>`);
-        elements.push(`<path d="M${state.x + 8},${state.y + 8}h18v18h-18z M${state.x + size - 28},${state.y + 8}h18v18h-18z M${state.x + 8},${state.y + size - 28}h18v18h-18z" fill="#111827"/>`);
-        elements.push(`<text x="${Math.round(state.x + (size / 2))}" y="${Math.round(state.y + size + 18)}" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="800" text-anchor="middle" fill="#111827">QR ${escapeXml(data.replace(/^LA,/, ""))}</text>`);
+        items.push({
+          kind: "qr",
+          type: "qr",
+          area: "qr",
+          x: state.x,
+          y: state.y,
+          width: size,
+          height: size,
+          text: data.replace(/^LA,/, ""),
+          label: "QR Code",
+          commandType: "^BQN",
+          zplSource: command.raw
+        });
       } else if (state.barcode?.type === "BARCODE") {
         const width = Math.max(120, Math.min(360, String(data).length * 11));
         const height = state.barcode.height;
-        elements.push(`<rect x="${Math.round(state.x)}" y="${Math.round(state.y)}" width="${width}" height="${height}" fill="#f8fafc" stroke="#111827" stroke-width="1"/>`);
-        for (let offset = 4; offset < width; offset += 8) {
-          elements.push(`<line x1="${Math.round(state.x + offset)}" y1="${Math.round(state.y + 3)}" x2="${Math.round(state.x + offset)}" y2="${Math.round(state.y + height - 3)}" stroke="#111827" stroke-width="${offset % 16 === 4 ? 2 : 1}"/>`);
-        }
+        items.push({
+          kind: "barcode",
+          type: "barcode",
+          area: "barcode",
+          x: state.x,
+          y: state.y,
+          width,
+          height,
+          text: data,
+          label: "Barcode",
+          commandType: "^B3",
+          zplSource: command.raw
+        });
       } else {
         const y = state.originMode === "FT" ? state.y : state.y + state.fontH;
-        appendSvgText(elements, {
+        const area = templateLabPreviewAreaFromText(data, sampleData) || "unknown";
+        const fieldWidth = Number(state.fieldBlock?.width);
+        const textWidth = Number.isFinite(fieldWidth) ? fieldWidth : Math.max(1, String(data).length * Math.max(8, state.fontW || 12) * 0.62);
+        items.push({
+          kind: "text",
+          type: "text",
+          area,
           x: state.x,
-          y,
+          y: state.originMode === "FT" ? state.y - state.fontH : state.y,
+          baselineY: y,
+          width: textWidth,
+          height: Math.max(1, (state.fontH || 24) * Number(state.fieldBlock?.maxLines || 1)),
           text: data,
           fontH: state.fontH,
           fontW: state.fontW,
           fieldBlock: state.fieldBlock,
-          reverse: state.reverse
+          reverse: state.reverse,
+          tokenName: templateLabControlTokenForArea(area),
+          label: `${templateLabAreaLabel(area)} Text`,
+          commandType: "^FD",
+          zplSource: command.raw
         });
       }
       state.fieldCount += 1;
@@ -6189,6 +6623,8 @@ function buildApproximateZplPreview(renderedZpl, profile = {}) {
     }
   }
 
+  const semantics = assignPreviewSemanticBorders(items, labelHeight);
+  const elementMap = items.map(previewItemGeometry);
   const gridStep = Math.max(50, Math.round(labelWidth / 12));
   const svg = [
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${Math.round(labelWidth)} ${Math.round(labelHeight)}" width="${Math.round(labelWidth)}" height="${Math.round(labelHeight)}" role="img" aria-label="Approximate ZPL label preview">`,
@@ -6197,7 +6633,7 @@ function buildApproximateZplPreview(renderedZpl, profile = {}) {
     "</defs>",
     `<rect x="0" y="0" width="${Math.round(labelWidth)}" height="${Math.round(labelHeight)}" fill="#ffffff" stroke="#111827" stroke-width="3"/>`,
     `<rect x="0" y="0" width="${Math.round(labelWidth)}" height="${Math.round(labelHeight)}" fill="url(#grid)" opacity="0.55"/>`,
-    ...elements,
+    ...items.map((item) => previewItemSvg(item, profile)).filter(Boolean),
     "</svg>"
   ].join("");
 
@@ -6213,8 +6649,10 @@ function buildApproximateZplPreview(renderedZpl, profile = {}) {
       unsupportedZplCommands: Array.from(unsupported).sort(),
       qrDetected: state.qrDetected,
       logoDetected: state.logoDetected,
-      bottomGrid: detectBottomGridFromBorders(previewBorders, { labelHeightDots: labelHeight }),
-      fieldCount: state.fieldCount
+      bottomGrid: semantics.bottomGrid,
+      fieldCount: state.fieldCount,
+      elementMap,
+      geometryMap: elementMap
     }
   };
 }
@@ -6268,12 +6706,16 @@ function extractQrMetadata(renderedZpl, sourceTemplate) {
   };
 }
 
-function extractTemplateRenderMetadata({ renderedZpl, sourceTemplate, templateName, profile, fitDebug, previewInfo }) {
+function extractTemplateRenderMetadata({ renderedZpl, sourceTemplate, templateName, profile, fitDebug, previewInfo, renderedZplSha256, dynamicTemplateSha256, renderId, renderedAt }) {
   const graphicCommands = String(renderedZpl || "").match(/\^GFA|~DG|\^XG/g) || [];
   const previewMetadata = previewInfo?.metadata || {};
   return {
+    renderId,
+    renderedAt,
     template: templateName,
     payloadBytes: Buffer.byteLength(String(renderedZpl || ""), "utf8"),
+    renderedZplSha256,
+    dynamicTemplateSha256,
     qr: extractQrMetadata(renderedZpl, sourceTemplate),
     rfidCommandPresent: /\^RFW,/.test(String(renderedZpl || "")),
     rfidCommands: String(renderedZpl || "").match(/\^RFW,[^^]+\^FD[^^]*\^FS/g) || [],
@@ -6291,12 +6733,14 @@ function extractTemplateRenderMetadata({ renderedZpl, sourceTemplate, templateNa
     qrDetected: previewMetadata.qrDetected ?? /\^BQN,/.test(String(renderedZpl || "")),
     logoDetected: previewMetadata.logoDetected ?? /\^GFA/.test(String(renderedZpl || "")),
     fieldCount: previewMetadata.fieldCount || 0,
+    elementMap: previewMetadata.elementMap || [],
+    geometryMap: previewMetadata.geometryMap || previewMetadata.elementMap || [],
     profile
   };
 }
 
-async function renderOptionalZplPreviewImage(renderedZpl, profile) {
-  const approximatePreview = buildApproximateZplPreview(renderedZpl, profile);
+async function renderOptionalZplPreviewImage(renderedZpl, profile, options = {}) {
+  const approximatePreview = buildApproximateZplPreview(renderedZpl, profile, options);
   const rendererUrl = trimString(process.env.ZPL_PREVIEW_RENDERER_URL);
   if (!rendererUrl) {
     return {
@@ -6352,35 +6796,50 @@ async function buildTemplatePreviewPayload(input = {}) {
   });
   const data = buildTemplateLabData(input, selected.definition);
   const sourceTemplateText = loadZplTemplate(selected.templatePath);
-  const geometryFieldFitDefinitions = buildFieldFitDefinitionsFromGeometry(profile?.fieldGeometryOverrides || {});
-  const templateTextWithGeometry = applyFieldGeometryOverridesToTemplateSource(sourceTemplateText, profile?.fieldGeometryOverrides || {});
-  const templateTextWithPositions = applyFieldPositionOverridesToTemplateSource(templateTextWithGeometry, profile?.fieldPositionOverrides || {});
-  const templateText = applyBottomGridOverrideToZpl(templateTextWithPositions, profile);
-  const renderOptions = { fieldFitDefinitions: deepMergePlainObjects(profile?.fieldFitDefinitions || {}, geometryFieldFitDefinitions) };
+  const dynamicTemplateZpl = applyTemplateLabDynamicSourceOverrides(sourceTemplateText, profile);
+  const renderOptions = { fieldFitDefinitions: getFittedFieldDefinitions(parseTemplateLabFieldFitDefinitionsFromSource(dynamicTemplateZpl)) };
   const renderedResult = selected.definition.requiresRfid
-    ? renderZplTemplateWithMetadata(templateText, data, renderOptions)
-    : renderZplTemplateWithoutRfidWithMetadata(templateText, data, renderOptions);
-  const renderedZpl = applyTemplateLabRenderedOverrides(renderedResult.rendered, profile);
-  const imagePreview = await renderOptionalZplPreviewImage(renderedZpl, profile);
+    ? renderZplTemplateWithMetadata(dynamicTemplateZpl, data, renderOptions)
+    : renderZplTemplateWithoutRfidWithMetadata(dynamicTemplateZpl, data, renderOptions);
+  const renderedZpl = renderedResult.rendered;
+  const renderedAt = isoNow();
+  const renderedZplSha256 = sha256Hex(renderedZpl);
+  const dynamicTemplateSha256 = sha256Hex(dynamicTemplateZpl);
+  const renderId = buildTemplateLabRenderId(selected.name, profile?.key || profileKey, renderedZpl, renderedAt);
+  const imagePreview = await renderOptionalZplPreviewImage(renderedZpl, profile, { sampleData: data });
   const metadata = extractTemplateRenderMetadata({
     renderedZpl,
-    sourceTemplate: templateText,
+    sourceTemplate: dynamicTemplateZpl,
     templateName: selected.name,
     profile,
     fitDebug: renderedResult.fitDebug,
-    previewInfo: imagePreview
+    previewInfo: imagePreview,
+    renderedZplSha256,
+    dynamicTemplateSha256,
+    renderId,
+    renderedAt
   });
 
   return {
     ok: true,
+    renderId,
+    renderedAt,
     template: selected.name,
     templatePath: selected.templatePath,
     requiresRfid: selected.definition.requiresRfid,
     profileKey: profile?.key || null,
     sampleData: data,
     renderedZpl,
+    dynamicTemplateZpl,
+    renderedZplSha256,
+    dynamicTemplateSha256,
+    payloadBytes: Buffer.byteLength(String(renderedZpl || ""), "utf8"),
+    dynamicTemplateBytes: Buffer.byteLength(String(dynamicTemplateZpl || ""), "utf8"),
+    elementMap: metadata.elementMap || [],
+    geometryMap: metadata.geometryMap || [],
     metadata,
     profileOverrides: inlineOverrides,
+    fullProfileOverrides: inlineOverrides,
     savedProfileOverrides: profile?.savedOverrides || {},
     profileConfigPath: ZPL_TEMPLATE_LAB_PROFILE_PATH,
     imagePreview
@@ -6393,6 +6852,47 @@ function setTemplateTestSendFunction(fn) {
 
 function resetTemplateTestSendFunction() {
   templateTestSendFunctionForTests = null;
+}
+
+async function resolveTemplateTestSendRender(body = {}) {
+  const snapshot = isPlainObject(body.renderSnapshot) ? body.renderSnapshot : body;
+  const renderedZpl = typeof snapshot.renderedZpl === "string" ? snapshot.renderedZpl : "";
+  if (!renderedZpl) {
+    const preview = await buildTemplatePreviewPayload(body);
+    return {
+      source: "server-rendered-request",
+      renderId: preview.renderId,
+      renderedAt: preview.renderedAt,
+      template: preview.template,
+      profileKey: preview.profileKey,
+      sampleData: preview.sampleData,
+      renderedZpl: preview.renderedZpl,
+      renderedZplSha256: preview.renderedZplSha256,
+      payloadBytes: Buffer.byteLength(preview.renderedZpl, "utf8")
+    };
+  }
+
+  const expectedDigest = trimString(snapshot.renderedZplSha256 || snapshot.renderDigest || body.renderedZplSha256);
+  const actualDigest = sha256Hex(renderedZpl);
+  if (expectedDigest && expectedDigest !== actualDigest) {
+    throw httpError(400, "RENDERED_ZPL_DIGEST_MISMATCH", "Proof print rejected because the rendered ZPL digest does not match the current render snapshot.", {
+      renderId: trimString(snapshot.renderId),
+      expectedDigest,
+      actualDigest
+    });
+  }
+
+  return {
+    source: "current-render-snapshot",
+    renderId: trimString(snapshot.renderId),
+    renderedAt: trimString(snapshot.renderedAt),
+    template: trimString(snapshot.template || body.template || body.templateName),
+    profileKey: trimString(snapshot.profileKey || body.profileKey || body.profile),
+    sampleData: isPlainObject(snapshot.sampleData) ? snapshot.sampleData : buildTemplateLabData(body),
+    renderedZpl,
+    renderedZplSha256: actualDigest,
+    payloadBytes: Buffer.byteLength(renderedZpl, "utf8")
+  };
 }
 
 function saveTemplateLabProfileOverrides(body = {}) {
@@ -6409,6 +6909,7 @@ function saveTemplateLabProfileOverrides(body = {}) {
   const flatOverrides = buildProfileOverridesFromInput({ ...body, profileOverrides: undefined });
   const overrides = deepMergePlainObjects(explicitOverrides, flatOverrides);
   const templateName = trimString(body.template || body.templateName || overrides.templateName || baseProfile.template);
+  const updatedAt = isoNow();
   let templatePath = "";
   try {
     templatePath = normalizeTemplateLabTemplateName(templateName).templatePath;
@@ -6418,13 +6919,13 @@ function saveTemplateLabProfileOverrides(body = {}) {
   overrides.profileKey = profileKey;
   overrides.templateName = templateName;
   overrides.sourceTemplatePath = templatePath;
-  overrides.updatedAt = isoNow();
+  overrides.updatedAt = updatedAt;
   const updatedBy = trimString(body.updatedBy || body.operator || body.user || body.updatedByName);
   if (updatedBy) overrides.updatedBy = updatedBy;
   const config = readTemplateLabProfileConfig();
   config.profiles = isPlainObject(config.profiles) ? config.profiles : {};
   config.profiles[profileKey] = overrides;
-  config.updatedAt = isoNow();
+  config.updatedAt = updatedAt;
   writeTemplateLabProfileConfig(config);
 
   logInfo("template_lab_profile_saved", {
@@ -6437,8 +6938,13 @@ function saveTemplateLabProfileOverrides(body = {}) {
     ok: true,
     profileKey,
     profileConfigPath: ZPL_TEMPLATE_LAB_PROFILE_PATH,
+    savedPath: ZPL_TEMPLATE_LAB_PROFILE_PATH,
+    savedAt: updatedAt,
     overrides,
-    profile: buildEffectiveTemplateLabProfile(profileKey, profileKey, {})
+    profile: buildEffectiveTemplateLabProfile(profileKey, profileKey, {}),
+    previewOnly: true,
+    productionUnchanged: true,
+    message: "Template Lab profile overrides saved. Preview/test only. Production unchanged."
   };
 }
 
@@ -8000,11 +8506,14 @@ app.post("/api/print/template-test-send", requireOfflineLocalAccess, async (req,
 
   let preview = null;
   try {
-    preview = await buildTemplatePreviewPayload(body);
-    const bytes = Buffer.byteLength(preview.renderedZpl, "utf8");
+    preview = await resolveTemplateTestSendRender(body);
+    const bytes = preview.payloadBytes;
     logInfo("template_test_send_attempt", {
       template: preview.template,
       profileKey: preview.profileKey,
+      renderId: preview.renderId,
+      renderSource: preview.source,
+      renderedZplSha256: preview.renderedZplSha256,
       printerIp,
       printerPort,
       lotNumber: preview.sampleData.lotNumber,
@@ -8024,6 +8533,9 @@ app.post("/api/print/template-test-send", requireOfflineLocalAccess, async (req,
     logInfo("template_test_send_success", {
       template: preview.template,
       profileKey: preview.profileKey,
+      renderId: preview.renderId,
+      renderSource: preview.source,
+      renderedZplSha256: preview.renderedZplSha256,
       printerIp,
       printerPort,
       lotNumber: preview.sampleData.lotNumber,
@@ -8041,6 +8553,9 @@ app.post("/api/print/template-test-send", requireOfflineLocalAccess, async (req,
       queued: false,
       template: preview.template,
       profileKey: preview.profileKey,
+      renderId: preview.renderId,
+      renderSource: preview.source,
+      renderedZplSha256: preview.renderedZplSha256,
       printerIp,
       printerPort,
       bytesSent: sendResult?.bytesSent ?? bytes,

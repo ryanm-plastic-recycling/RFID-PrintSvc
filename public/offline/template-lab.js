@@ -3,6 +3,11 @@
   var latestPreview = null;
   var latestRenderedPayload = null;
   var latestRenderSignature = "";
+  var currentRenderSnapshot = null;
+  var selectedPreviewObjectId = "";
+  var lastSaveProfileAt = "";
+  var lastPromoteAt = "";
+  var lastProofPrintAt = "";
   var fitFields = ["color", "colorSmall", "materialType", "materialTypeSmall", "tolling", "productDescription"];
   var renderButton = document.getElementById("renderButton");
   var downloadButton = document.getElementById("downloadButton");
@@ -10,11 +15,14 @@
   var loadProfileButton = document.getElementById("loadProfileButton");
   var reloadTemplateButton = document.getElementById("reloadTemplateButton");
   var compareTemplateButton = document.getElementById("compareTemplateButton");
+  var compareProductionTemplateButton = document.getElementById("compareProductionTemplateButton");
   var exportProfileButton = document.getElementById("exportProfileButton");
   var saveProfileButton = document.getElementById("saveProfileButton");
   var resetProfileButton = document.getElementById("resetProfileButton");
   var promoteTemplateButton = document.getElementById("promoteTemplateButton");
   var printCalibrationButton = document.getElementById("printCalibrationButton");
+  var printSettingsReportButton = document.getElementById("printSettingsReportButton");
+  var includeRenderedZplInReport = document.getElementById("includeRenderedZplInReport");
   var resetSampleDataButton = document.getElementById("resetSampleDataButton");
   var copyProfileButton = document.getElementById("copyProfileButton");
   var downloadProfileButton = document.getElementById("downloadProfileButton");
@@ -37,10 +45,12 @@
   var renderedZpl = document.getElementById("renderedZpl");
   var codeSizeBadge = document.getElementById("codeSizeBadge");
   var previewImage = document.getElementById("previewImage");
+  var previewSvgHost = document.getElementById("previewSvgHost");
   var previewPlaceholder = document.getElementById("previewPlaceholder");
   var previewStatus = document.getElementById("previewStatus");
   var renderStateLine = document.getElementById("renderStateLine");
   var lastRenderedAt = document.getElementById("lastRenderedAt");
+  var renderSnapshotDebug = document.getElementById("renderSnapshotDebug");
   var sendResult = document.getElementById("sendResult");
   var fieldFitControls = document.getElementById("fieldFitControls");
   var profileJson = document.getElementById("profileJson");
@@ -52,6 +62,10 @@
   var templateGeometryWarnings = document.getElementById("templateGeometryWarnings");
   var templateCompareResult = document.getElementById("templateCompareResult");
   var selectedFieldPanel = document.getElementById("selectedFieldPanel");
+  var selectedPreviewObjectPanel = document.getElementById("selectedPreviewObjectPanel");
+  var quickEditPanel = document.getElementById("quickEditPanel");
+  var borderVisibilityControls = document.getElementById("borderVisibilityControls");
+  var templateLabPrintReportBody = document.getElementById("templateLabPrintReportBody");
   var applyFieldBoostsButton = document.getElementById("applyFieldBoostsButton");
   var logoAssetFile = document.getElementById("logoAssetFile");
   var logoAssetSelect = document.getElementById("logoAssetSelect");
@@ -120,6 +134,20 @@
     { key: "metadata", label: "Metadata" },
     { key: "field-fit-debug", label: "Field-Fit Debug" },
     { key: "rendered-zpl", label: "Rendered ZPL" }
+  ];
+  var staleControlsMessage = "Render/Re-render before sending or promoting. Current controls have changed since the last render.";
+  var borderVisibilityDefinitions = [
+    { key: "lot", inputId: "borderVisible_lot", label: "Lot number border", areaKey: "lot-number", title: "Shows or hides only the lot number field border." },
+    { key: "box", inputId: "borderVisible_box", label: "Box number border", areaKey: "box-number", title: "Shows or hides only the box number field border." },
+    { key: "materialType", inputId: "borderVisible_materialType", label: "Material type border", areaKey: "material-type", title: "Shows or hides only the material type field border." },
+    { key: "color", inputId: "borderVisible_color", label: "Color border", areaKey: "color", title: "Shows or hides only the color field border; bottom grid borders stay separate." },
+    { key: "productDescription", inputId: "borderVisible_productDescription", label: "Product description border", areaKey: "product-description", title: "Shows or hides only the product description field border." },
+    { key: "po", inputId: "borderVisible_po", label: "PO border", areaKey: "po", title: "Shows or hides only the PO field border." },
+    { key: "pounds", inputId: "borderVisible_pounds", label: "Pounds border", areaKey: "pounds", title: "Shows or hides only the pounds field border." },
+    { key: "tolling", inputId: "borderVisible_tolling", label: "Tolling border/background", areaKey: "tolling", title: "Shows or hides only tolling border/background objects; bottom grid stays separate." },
+    { key: "bottomGrid", inputId: "borderVisible_bottomGrid", label: "Bottom grid/footer row border", areaKey: "bottom-grid", title: "Shows or hides only the bottom grid outer and column line borders." },
+    { key: "logoGuide", inputId: "borderVisible_logoGuide", label: "Logo guide border", areaKey: "logo", title: "Shows or hides the approximate preview guide around the logo; required logo content remains." },
+    { key: "qrGuide", inputId: "borderVisible_qrGuide", label: "QR guide border", areaKey: "qr", title: "Shows or hides the approximate preview guide around the QR code; QR content remains." }
   ];
   var rfidProofPrintersByStation = Object.freeze({
     P1: Object.freeze({ ip: "192.168.50.239", port: 9100 }),
@@ -343,6 +371,100 @@
     return JSON.parse(JSON.stringify(value || {}));
   }
 
+  function shortDigest(value) {
+    return value ? String(value).slice(0, 12) : "-";
+  }
+
+  function isRenderSnapshotStale() {
+    return !currentRenderSnapshot || !latestRenderSignature || currentRenderSignature() !== latestRenderSignature;
+  }
+
+  function snapshotOrBlock(targetElement, statusTitleText) {
+    if (!currentRenderSnapshot || !currentRenderSnapshot.renderedZpl) {
+      var noRenderMessage = "Render/Re-render before sending or promoting. No successful render snapshot exists.";
+      if (targetElement) targetElement.textContent = noRenderMessage;
+      setStatus(false, statusTitleText || "Render Snapshot Required", noRenderMessage);
+      return null;
+    }
+    if (isRenderSnapshotStale()) {
+      if (targetElement) targetElement.textContent = staleControlsMessage;
+      setStatus(false, statusTitleText || "Render Snapshot Stale", staleControlsMessage);
+      return null;
+    }
+    return currentRenderSnapshot;
+  }
+
+  function snapshotDebugValue(label, value) {
+    return "<div><span class=\"label-text\">" + label + "</span><strong>" + String(value || "-") + "</strong></div>";
+  }
+
+  function updateRenderSnapshotDebug() {
+    if (!renderSnapshotDebug) return;
+    var stale = isRenderSnapshotStale();
+    renderSnapshotDebug.innerHTML = [
+      snapshotDebugValue("current renderId", currentRenderSnapshot && currentRenderSnapshot.renderId),
+      snapshotDebugValue("render digest", currentRenderSnapshot && shortDigest(currentRenderSnapshot.renderedZplSha256)),
+      snapshotDebugValue("template digest", currentRenderSnapshot && shortDigest(currentRenderSnapshot.dynamicTemplateSha256)),
+      snapshotDebugValue("stale", currentRenderSnapshot ? (stale ? "stale" : "not stale") : "not rendered"),
+      snapshotDebugValue("last save profile", lastSaveProfileAt),
+      snapshotDebugValue("last promote", lastPromoteAt),
+      snapshotDebugValue("last proof print", lastProofPrintAt)
+    ].join("");
+  }
+
+  function areaKeyFromPreviewArea(area) {
+    return {
+      lot: "lot-number",
+      box: "box-number",
+      materialType: "material-type",
+      color: "color",
+      productDescription: "product-description",
+      po: "po",
+      pounds: "pounds",
+      tolling: "tolling",
+      bottomGrid: "bottom-grid",
+      qr: "qr",
+      logo: "logo",
+      barcode: "preview"
+    }[area] || "field-fit";
+  }
+
+  function areaKeyToPreviewArea(key) {
+    return {
+      "lot-number": "lot",
+      "box-number": "box",
+      "material-type": "materialType",
+      color: "color",
+      "product-description": "productDescription",
+      po: "po",
+      pounds: "pounds",
+      tolling: "tolling",
+      "bottom-grid": "bottomGrid",
+      qr: "qr",
+      logo: "logo"
+    }[key] || "";
+  }
+
+  function activateAreaFilterForPreviewArea(area) {
+    var key = areaKeyFromPreviewArea(area);
+    if (!key) return;
+    activePreset = "custom";
+    collapseAllFilters = false;
+    activeAreaFilters.add(key);
+    activeAreaFilters.add("preview");
+    if (key !== "preview") activeAreaFilters.add("field-fit");
+    persistAreaFilters();
+    applyAreaFilters();
+  }
+
+  function highlightPreviewArea(area) {
+    if (!previewSvgHost) return;
+    previewSvgHost.querySelectorAll(".preview-object").forEach(function (element) {
+      element.classList.toggle("preview-object-active-area", Boolean(area) && element.getAttribute("data-area") === area);
+      element.classList.toggle("preview-object-selected", Boolean(selectedPreviewObjectId) && element.getAttribute("data-object-id") === selectedPreviewObjectId);
+    });
+  }
+
   function fieldAreaKey(tokenName) {
     var token = String(tokenName || "");
     if (/^lotNumber$/.test(token)) return "lot-number";
@@ -470,6 +592,35 @@
     applyAreaFilters();
   }
 
+  function buildBorderVisibilityControls() {
+    if (!borderVisibilityControls) return;
+    borderVisibilityControls.innerHTML = borderVisibilityDefinitions.map(function (definition) {
+      return [
+        "<label class=\"checkbox-label compact-checkbox\" data-area-section=\"" + definition.areaKey + "\" title=\"" + definition.title + "\">",
+        "<input id=\"" + definition.inputId + "\" type=\"checkbox\" checked>",
+        definition.label,
+        "</label>"
+      ].join("");
+    }).join("");
+  }
+
+  function setBorderVisibilityControls(borderVisibility) {
+    var visibility = borderVisibility || {};
+    borderVisibilityDefinitions.forEach(function (definition) {
+      var element = input(definition.inputId);
+      if (element) element.checked = visibility[definition.key] !== false;
+    });
+  }
+
+  function collectBorderVisibility() {
+    var output = {};
+    borderVisibilityDefinitions.forEach(function (definition) {
+      var element = input(definition.inputId);
+      if (element) output[definition.key] = Boolean(element.checked);
+    });
+    return output;
+  }
+
   function updateSelectedFieldPanel(field) {
     if (!selectedFieldPanel) return;
     if (!field) {
@@ -487,12 +638,16 @@
     document.querySelectorAll(".field-fit-fieldset").forEach(function (fieldset) {
       fieldset.addEventListener("focusin", function () {
         updateSelectedFieldPanel(fieldset.getAttribute("data-field"));
+        highlightPreviewArea(areaKeyToPreviewArea(fieldAreaKey(fieldset.getAttribute("data-field"))));
       });
       fieldset.addEventListener("click", function () {
         updateSelectedFieldPanel(fieldset.getAttribute("data-field"));
+        highlightPreviewArea(areaKeyToPreviewArea(fieldAreaKey(fieldset.getAttribute("data-field"))));
       });
       fieldset.addEventListener("input", function () {
         updateSelectedFieldPanel(fieldset.getAttribute("data-field"));
+        exportProfileJson();
+        updateRenderState(false);
       });
     });
     updateSelectedFieldPanel(fitFields[0]);
@@ -574,6 +729,7 @@
     if (logoAssetSelect) logoAssetSelect.value = profile.logo && profile.logo.assetName || "";
     if (logoAssetResult) logoAssetResult.textContent = selectedLogoAsset ? "Selected logo asset: " + (selectedLogoAsset.assetName || "profile asset") : "";
     setControlsDisabled(["logoX", "logoY", "logoScale", "logoWidthDots", "logoHeightDots", "logoThreshold", "logoDithering"], false);
+    setBorderVisibilityControls(profile.borderVisibility || {});
     setInputValue("bottomGridX", bottomGrid.x);
     setInputValue("bottomGridY", bottomGrid.y);
     setInputValue("bottomGridWidth", bottomGrid.width);
@@ -607,6 +763,7 @@
     setInputValue("labelShiftY", profile.labelShiftY ?? input("labelShiftY")?.value);
     setInputValue("borderThickness", profile.borderThickness ?? input("borderThickness")?.value);
     if (input("scaleBorderThickness") && profile.scaleBorderThickness !== undefined) input("scaleBorderThickness").checked = Boolean(profile.scaleBorderThickness);
+    if (profile.borderVisibility) setBorderVisibilityControls(profile.borderVisibility);
 
     var qr = profile.qr || {};
     if (qr.x !== undefined) setInputValue("qrX", qr.x);
@@ -807,6 +964,7 @@
     overrides.scaleY = overrides.globalScaleY;
     overrides.offsetX = overrides.globalOffsetX;
     overrides.offsetY = overrides.globalOffsetY;
+    overrides.borderVisibility = collectBorderVisibility();
 
     var qr = {};
     putIfNumber(qr, "x", "qrX");
@@ -923,6 +1081,31 @@
     }
   }
 
+  async function compareCurrentRenderVsProductionTemplate() {
+    var snapshot = snapshotOrBlock(templateCompareResult, "Compare Blocked");
+    if (!snapshot) return;
+    try {
+      var query = new URLSearchParams({
+        template: snapshot.template || templateSelect.value || "",
+        profileKey: snapshot.profileKey || profileSelect.value || ""
+      });
+      var geometry = await fetchJson("/api/print/template-lab/template-geometry?" + query.toString(), { cache: "no-store" });
+      var productionDigest = geometry.productionTemplateSha256 || "";
+      var currentDigest = snapshot.dynamicTemplateSha256 || "";
+      var same = productionDigest && currentDigest && productionDigest === currentDigest;
+      if (templateCompareResult) {
+        templateCompareResult.textContent = [
+          same ? "Current rendered dynamic template matches production template." : "Current rendered dynamic template differs from production template.",
+          "Current digest: " + shortDigest(currentDigest),
+          "Production digest: " + shortDigest(productionDigest)
+        ].join(" | ");
+      }
+    } catch (error) {
+      if (templateCompareResult) templateCompareResult.textContent = error.message;
+      setStatus(false, "Compare Failed", error.message);
+    }
+  }
+
   function availableAreaKeys() {
     var keys = new Set(["sample-inputs", "actions", "proof-print", "preview", "whole-label", "field-fit", "export-save", "metadata", "field-fit-debug", "rendered-zpl"]);
     if (currentTemplateGeometry && currentTemplateGeometry.qr) keys.add("qr");
@@ -1012,6 +1195,9 @@
         button.classList.toggle("area-filter-pill-active", activePreset === "custom" && activeAreaFilters.has(key));
       });
     }
+    var selectedItem = previewObjectById(selectedPreviewObjectId);
+    var highlightedArea = selectedItem && selectedItem.area || Array.from(activeAreaFilters).map(areaKeyToPreviewArea).find(Boolean) || "";
+    highlightPreviewArea(highlightedArea);
   }
 
   function updateAvailableAreaFilters() {
@@ -1102,6 +1288,7 @@
     if (source.fieldGeometryOverrides) sections.push("field geometry");
     if (source.fieldFitDefinitions) sections.push("field fit");
     if (source.bottomGrid) sections.push("bottom grid");
+    if (source.borderVisibility) sections.push("border visibility");
     return sections;
   }
 
@@ -1122,8 +1309,10 @@
       "",
       "Template: " + payload.template,
       "Profile: " + payload.profileKey,
-      "Source: current rendered browser controls",
-      "Rendered payload bytes: " + renderedPayloadBytes(),
+      "RenderId: " + (payload.renderId || "-"),
+      "Source: current render snapshot",
+      "Rendered payload bytes: " + (payload.payloadBytes || renderedPayloadBytes()),
+      "Dynamic template digest: " + shortDigest(payload.dynamicTemplateSha256),
       "QR: " + (qr.x ?? "-") + "," + (qr.y ?? "-") + " mag " + (qr.magnification ?? "-"),
       "Logo: " + (logo.x ?? "-") + "," + (logo.y ?? "-") + " size " + (logo.widthDots ?? "-") + "x" + (logo.heightDots ?? "-"),
       "Field-fit/geometry fields changed: " + (changedFields.length ? changedFields.join(", ") : "none"),
@@ -1143,6 +1332,7 @@
       ? "Rendered with current controls"
       : "Unsaved changes: click Render / Re-render to update preview and metadata";
     renderStateLine.className = isCurrent ? "render-state render-state-current" : "render-state render-state-stale";
+    updateRenderSnapshotDebug();
   }
 
   function badge(label, value, variant) {
@@ -1199,10 +1389,24 @@
   function renderPreviewImage(preview) {
     if (!previewImage || !previewPlaceholder || !previewStatus) return;
     var imagePreview = preview.imagePreview || {};
+    var svg = imagePreview.data && imagePreview.data.svg;
     var src = previewImageSrc(imagePreview);
     previewImage.classList.add("hidden");
     previewImage.removeAttribute("src");
+    if (previewSvgHost) {
+      previewSvgHost.classList.add("hidden");
+      previewSvgHost.innerHTML = "";
+    }
     previewPlaceholder.classList.remove("hidden");
+
+    if (svg && previewSvgHost) {
+      previewSvgHost.innerHTML = svg;
+      previewSvgHost.classList.remove("hidden");
+      previewPlaceholder.classList.add("hidden");
+      previewStatus.textContent = imagePreview.message || "Interactive approximate preview shown. Hover or click objects to identify and edit controls.";
+      wirePreviewObjectHandlers();
+      return;
+    }
 
     if (src) {
       previewImage.src = src;
@@ -1216,6 +1420,175 @@
     previewPlaceholder.textContent = imagePreview.configured ? "Renderer unavailable" : "Approximate preview unavailable";
   }
 
+  function currentGeometryMap() {
+    return currentRenderSnapshot && Array.isArray(currentRenderSnapshot.geometryMap)
+      ? currentRenderSnapshot.geometryMap
+      : [];
+  }
+
+  function previewObjectById(objectId) {
+    return currentGeometryMap().find(function (item) {
+      return item.id === objectId;
+    }) || null;
+  }
+
+  function controlLabel(controlId) {
+    return String(controlId || "")
+      .replace(/^fieldGeo_[^_]+_/, "")
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/^./, function (value) { return value.toUpperCase(); });
+  }
+
+  function scrollControlIntoViewIfNeeded(controlId) {
+    var element = input(controlId);
+    if (!element) return;
+    var rect = element.getBoundingClientRect();
+    if (rect.top < 80 || rect.bottom > window.innerHeight - 40) {
+      element.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+    try {
+      element.focus({ preventScroll: true });
+    } catch {
+      element.focus();
+    }
+  }
+
+  function renderSelectedPreviewObjectPanel(item) {
+    if (!selectedPreviewObjectPanel) return;
+    if (!item) {
+      selectedPreviewObjectPanel.textContent = "Selected object: -";
+      return;
+    }
+    selectedPreviewObjectPanel.textContent = [
+      "Selected object: " + item.id,
+      "type " + (item.type || "-"),
+      "area " + (item.area || "-"),
+      "x/y " + (item.x ?? "-") + "/" + (item.y ?? "-"),
+      "w/h " + (item.width ?? "-") + "/" + (item.height ?? "-"),
+      "controls " + ((item.linkedControls || []).join(", ") || "-")
+    ].join(" | ");
+  }
+
+  function updateControlFromQuickEdit(controlId, value) {
+    var element = input(controlId);
+    if (!element) return;
+    element.value = value;
+    var range = input(controlId + "Range");
+    if (range) range.value = value;
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+    exportProfileJson();
+    updateRenderState(false);
+    if (quickEditPanel) {
+      quickEditPanel.querySelectorAll("[data-quick-edit-prompt]").forEach(function (prompt) {
+        prompt.textContent = "Re-render after edit to update proof, promote, preview, and metadata.";
+      });
+    }
+  }
+
+  function renderQuickEditPanel(item) {
+    if (!quickEditPanel) return;
+    if (!item) {
+      quickEditPanel.classList.add("hidden");
+      quickEditPanel.innerHTML = "";
+      return;
+    }
+    var controls = (item.linkedControls || []).filter(function (controlId) {
+      return Boolean(input(controlId));
+    });
+    var rows = controls.map(function (controlId) {
+      var element = input(controlId);
+      return [
+        "<label title=\"Linked control: " + controlId + "\">",
+        controlLabel(controlId),
+        "<input data-quick-control=\"" + controlId + "\" type=\"number\" step=\"1\" value=\"" + (element ? element.value : "") + "\">",
+        "</label>"
+      ].join("");
+    });
+    quickEditPanel.classList.remove("hidden");
+    quickEditPanel.innerHTML = [
+      "<div class=\"quick-edit-header\"><strong>Quick Edit</strong><span>" + (item.label || item.id) + "</span></div>",
+      "<div class=\"quick-edit-grid\">" + (rows.join("") || "<p class=\"muted-line\">No linked numeric controls for this object.</p>") + "</div>",
+      "<div class=\"quick-edit-nudges\">",
+      "<button type=\"button\" data-nudge-axis=\"x\" data-nudge-delta=\"-5\">X -5</button>",
+      "<button type=\"button\" data-nudge-axis=\"x\" data-nudge-delta=\"-1\">X -1</button>",
+      "<button type=\"button\" data-nudge-axis=\"x\" data-nudge-delta=\"1\">X +1</button>",
+      "<button type=\"button\" data-nudge-axis=\"x\" data-nudge-delta=\"5\">X +5</button>",
+      "<button type=\"button\" data-nudge-axis=\"y\" data-nudge-delta=\"-5\">Y -5</button>",
+      "<button type=\"button\" data-nudge-axis=\"y\" data-nudge-delta=\"-1\">Y -1</button>",
+      "<button type=\"button\" data-nudge-axis=\"y\" data-nudge-delta=\"1\">Y +1</button>",
+      "<button type=\"button\" data-nudge-axis=\"y\" data-nudge-delta=\"5\">Y +5</button>",
+      "<button type=\"button\" data-nudge-axis=\"width\" data-nudge-delta=\"-5\">W -5</button>",
+      "<button type=\"button\" data-nudge-axis=\"width\" data-nudge-delta=\"-1\">W -1</button>",
+      "<button type=\"button\" data-nudge-axis=\"width\" data-nudge-delta=\"1\">W +1</button>",
+      "<button type=\"button\" data-nudge-axis=\"width\" data-nudge-delta=\"5\">W +5</button>",
+      "<button type=\"button\" data-nudge-axis=\"height\" data-nudge-delta=\"-5\">H -5</button>",
+      "<button type=\"button\" data-nudge-axis=\"height\" data-nudge-delta=\"-1\">H -1</button>",
+      "<button type=\"button\" data-nudge-axis=\"height\" data-nudge-delta=\"1\">H +1</button>",
+      "<button type=\"button\" data-nudge-axis=\"height\" data-nudge-delta=\"5\">H +5</button>",
+      "</div>",
+      "<div class=\"muted-line\" data-quick-edit-prompt>Quick edits update profile controls and mark the snapshot stale.</div>"
+    ].join("");
+  }
+
+  function candidateControlsForAxis(item, axis) {
+    var controls = item && item.linkedControls || [];
+    if (axis === "x") return controls.filter(function (id) { return /(^qrX$|^logoX$|^bottomGridX$|_X$)/.test(id); });
+    if (axis === "y") return controls.filter(function (id) { return /(^qrY$|^logoY$|^bottomGridY$|_Y$)/.test(id); });
+    if (axis === "width") return controls.filter(function (id) { return /(^logoWidthDots$|^bottomGridWidth$|FieldWidth$|BorderWidth$)/.test(id); });
+    if (axis === "height") return controls.filter(function (id) { return /(^logoHeightDots$|^bottomGridHeight$|FontHeight$|BorderHeight$)/.test(id); });
+    return [];
+  }
+
+  function nudgeSelectedObject(axis, delta) {
+    var item = previewObjectById(selectedPreviewObjectId);
+    if (!item) return;
+    var controlId = candidateControlsForAxis(item, axis)[0];
+    var element = input(controlId);
+    if (!element) return;
+    var current = Number(element.value || 0);
+    updateControlFromQuickEdit(controlId, String(Math.round((Number.isFinite(current) ? current : 0) + Number(delta || 0))));
+    renderQuickEditPanel(item);
+  }
+
+  function selectPreviewObject(objectId) {
+    var item = previewObjectById(objectId);
+    selectedPreviewObjectId = item ? item.id : "";
+    renderSelectedPreviewObjectPanel(item);
+    renderQuickEditPanel(item);
+    if (item) {
+      activateAreaFilterForPreviewArea(item.area);
+      highlightPreviewArea(item.area);
+      var firstControl = (item.linkedControls || []).find(function (controlId) { return Boolean(input(controlId)); });
+      if (firstControl) scrollControlIntoViewIfNeeded(firstControl);
+    } else {
+      highlightPreviewArea("");
+    }
+  }
+
+  function wirePreviewObjectHandlers() {
+    if (!previewSvgHost) return;
+    previewSvgHost.querySelectorAll(".preview-object").forEach(function (element) {
+      element.addEventListener("mouseenter", function () {
+        element.classList.add("preview-object-hover");
+      });
+      element.addEventListener("mouseleave", function () {
+        element.classList.remove("preview-object-hover");
+      });
+      element.addEventListener("click", function (event) {
+        event.preventDefault();
+        selectPreviewObject(element.getAttribute("data-object-id"));
+      });
+      element.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectPreviewObject(element.getAttribute("data-object-id"));
+        }
+      });
+    });
+    highlightPreviewArea(previewObjectById(selectedPreviewObjectId)?.area || "");
+  }
+
   function renderMetadata(preview) {
     var metadata = preview.metadata || {};
     var qr = metadata.qr || {};
@@ -1225,6 +1598,10 @@
     renderMetadataBadges(preview);
     renderPreviewImage(preview);
     var rows = [
+      ["RenderId", preview.renderId || metadata.renderId || "-"],
+      ["Rendered At", preview.renderedAt || metadata.renderedAt || "-"],
+      ["Render Digest", shortDigest(preview.renderedZplSha256 || metadata.renderedZplSha256)],
+      ["Dynamic Template Digest", shortDigest(preview.dynamicTemplateSha256 || metadata.dynamicTemplateSha256)],
       ["Template", preview.template],
       ["Payload Bytes", metadata.payloadBytes],
       ["QR Command", qr.command || "-"],
@@ -1244,6 +1621,7 @@
       ["Preview Mode", metadata.previewMode || preview.imagePreview?.mode || "-"],
       ["Label Dots", (metadata.labelWidthDots || "-") + " x " + (metadata.labelHeightDots || "-")],
       ["Unsupported ZPL", (metadata.unsupportedZplCommands || []).join(", ") || "none"],
+      ["Preview Objects", (metadata.geometryMap || metadata.elementMap || []).length],
       ["Fields Parsed", metadata.fieldCount || 0],
       ["Logo Source", metadata.logoDiagnostics?.source || "-"],
       ["Logo Payload", (metadata.logoDiagnostics?.payloadBytes || 0) + " bytes"],
@@ -1280,6 +1658,91 @@
         "</tbody></table>"
       ].join("")
       : "<p class=\"muted-line\">No fitted field debug returned.</p>";
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function reportSection(title, body) {
+    return "<section><h2>" + escapeHtml(title) + "</h2>" + body + "</section>";
+  }
+
+  function reportKeyValueRows(rows) {
+    return "<dl>" + rows.map(function (row) {
+      return "<dt>" + escapeHtml(row[0]) + "</dt><dd>" + escapeHtml(row[1]) + "</dd>";
+    }).join("") + "</dl>";
+  }
+
+  function jsonReportBlock(value) {
+    return "<pre>" + escapeHtml(JSON.stringify(value || {}, null, 2)) + "</pre>";
+  }
+
+  function buildPrintSettingsReport() {
+    if (!templateLabPrintReportBody) return;
+    var snapshot = currentRenderSnapshot || {};
+    var overrides = collectProfileOverrides();
+    var metadata = snapshot.metadata || latestPreview?.metadata || {};
+    var sampleData = snapshot.sampleData || formPayload();
+    var includeZpl = includeRenderedZplInReport && includeRenderedZplInReport.checked;
+    var borderVisibility = overrides.borderVisibility || {};
+    var sections = [
+      reportSection("Summary", reportKeyValueRows([
+        ["Template", snapshot.template || templateSelect.value || "-"],
+        ["Profile key", snapshot.profileKey || profileSelect.value || "-"],
+        ["Timestamp", new Date().toISOString()],
+        ["RenderId", snapshot.renderId || "-"],
+        ["Render digest", snapshot.renderedZplSha256 || "-"],
+        ["Dynamic template digest", snapshot.dynamicTemplateSha256 || "-"],
+        ["Payload bytes", snapshot.payloadBytes || metadata.payloadBytes || "-"],
+        ["Warning", "Proof print uses last rendered ZPL. Promote writes last rendered dynamic template. Save Lab Profile saves profile settings only."]
+      ])),
+      reportSection("Sample Data", jsonReportBlock(sampleData)),
+      reportSection("Profile Overrides By Area", jsonReportBlock({
+        label: {
+          labelWidthDots: overrides.labelWidthDots,
+          labelHeightDots: overrides.labelHeightDots,
+          globalScaleX: overrides.globalScaleX,
+          globalScaleY: overrides.globalScaleY,
+          globalOffsetX: overrides.globalOffsetX,
+          globalOffsetY: overrides.globalOffsetY
+        },
+        qr: overrides.qr || {},
+        logo: overrides.logo || {},
+        fieldGeometryOverrides: overrides.fieldGeometryOverrides || {},
+        fieldFitDefinitions: overrides.fieldFitDefinitions || {},
+        bottomGrid: overrides.bottomGrid || {},
+        borderVisibility: borderVisibility
+      })),
+      reportSection("QR Settings", jsonReportBlock(overrides.qr || {})),
+      reportSection("Logo Settings", jsonReportBlock(overrides.logo || {})),
+      reportSection("Field-Fit Settings", jsonReportBlock(metadata.fitDebug || {})),
+      reportSection("Bottom Grid Settings", jsonReportBlock(overrides.bottomGrid || {})),
+      reportSection("Visible Border Toggles", jsonReportBlock(borderVisibility)),
+      reportSection("Render Metadata", jsonReportBlock({
+        previewMode: metadata.previewMode,
+        labelWidthDots: metadata.labelWidthDots,
+        labelHeightDots: metadata.labelHeightDots,
+        qrDetected: metadata.qrDetected,
+        logoDetected: metadata.logoDetected,
+        unsupportedZplCommands: metadata.unsupportedZplCommands || [],
+        payloadBytes: metadata.payloadBytes,
+        elementCount: (metadata.geometryMap || metadata.elementMap || []).length
+      }))
+    ];
+    if (includeZpl && snapshot.renderedZpl) {
+      sections.push(reportSection("Rendered ZPL", "<pre>" + escapeHtml(snapshot.renderedZpl) + "</pre>"));
+    }
+    templateLabPrintReportBody.innerHTML = sections.join("");
+  }
+
+  function printSettingsReport() {
+    buildPrintSettingsReport();
+    window.print();
   }
 
   async function applyTemplateDefaults() {
@@ -1344,6 +1807,26 @@
       latestPreview = await postJson("/api/print/template-preview", payload);
       latestRenderedPayload = clonePlain(payload);
       latestRenderSignature = JSON.stringify(latestRenderedPayload);
+      currentRenderSnapshot = {
+        renderId: latestPreview.renderId,
+        renderedAt: latestPreview.renderedAt,
+        template: latestPreview.template,
+        templatePath: latestPreview.templatePath,
+        profileKey: latestPreview.profileKey,
+        sampleData: clonePlain(latestPreview.sampleData),
+        profileOverrides: clonePlain(latestPreview.profileOverrides || payload.profileOverrides || {}),
+        fullProfileOverrides: clonePlain(latestPreview.fullProfileOverrides || latestPreview.profileOverrides || payload.profileOverrides || {}),
+        renderedPayload: clonePlain(latestRenderedPayload),
+        renderedZpl: latestPreview.renderedZpl || "",
+        dynamicTemplateZpl: latestPreview.dynamicTemplateZpl || "",
+        renderedZplSha256: latestPreview.renderedZplSha256,
+        dynamicTemplateSha256: latestPreview.dynamicTemplateSha256,
+        payloadBytes: latestPreview.payloadBytes || (latestPreview.metadata && latestPreview.metadata.payloadBytes) || renderedPayloadBytes(),
+        dynamicTemplateBytes: latestPreview.dynamicTemplateBytes,
+        metadata: clonePlain(latestPreview.metadata || {}),
+        elementMap: clonePlain(latestPreview.elementMap || latestPreview.metadata?.elementMap || []),
+        geometryMap: clonePlain(latestPreview.geometryMap || latestPreview.metadata?.geometryMap || [])
+      };
       renderedZpl.textContent = latestPreview.renderedZpl || "";
       if (codeSizeBadge) codeSizeBadge.textContent = ((latestPreview.metadata && latestPreview.metadata.payloadBytes) || 0) + " bytes";
       renderMetadata(latestPreview);
@@ -1357,6 +1840,7 @@
     } catch (error) {
       latestPreview = null;
       latestRenderedPayload = null;
+      currentRenderSnapshot = null;
       renderedZpl.textContent = error.message;
       if (codeSizeBadge) codeSizeBadge.textContent = "render failed";
       latestRenderSignature = "";
@@ -1459,8 +1943,21 @@
   }
 
   async function sendProofPrint() {
-    var payload = formPayload();
+    var snapshot = snapshotOrBlock(sendResult, "Proof Print Blocked");
+    if (!snapshot) return;
+    var payload = clonePlain(snapshot.renderedPayload || {});
+    payload.renderId = snapshot.renderId;
+    payload.renderedAt = snapshot.renderedAt;
+    payload.template = snapshot.template;
+    payload.profileKey = snapshot.profileKey;
+    payload.sampleData = clonePlain(snapshot.sampleData || {});
+    payload.renderedZpl = snapshot.renderedZpl;
+    payload.renderedZplSha256 = snapshot.renderedZplSha256;
+    payload.payloadBytes = snapshot.payloadBytes;
     payload.confirmTestPrint = input("confirmTestPrint").checked;
+    payload.printerIp = input("printerIp").value;
+    payload.port = Number(input("printerPort").value || 9100);
+    payload.printerPort = payload.port;
     var targetError = validateProofPrinterTarget(payload);
     if (targetError) {
       sendResult.textContent = targetError;
@@ -1472,6 +1969,8 @@
     try {
       var result = await postJson("/api/print/template-test-send", payload);
       sendResult.textContent = result.message || "Template test ZPL sent.";
+      lastProofPrintAt = new Date().toISOString();
+      updateRenderSnapshotDebug();
       setStatus(true, "Proof Print Sent", "The send bypassed the production queue and does not confirm physical printing.");
     } catch (error) {
       sendResult.textContent = error.message;
@@ -1514,8 +2013,9 @@
         template: templateSelect.value,
         overrides: exported.overrides
       });
-      profileSaveResult.textContent = "Saved to " + result.profileConfigPath + " | Profile " + result.profileKey + " | " + new Date().toISOString() + " | Preview/test only; production unchanged.";
-      await reloadCatalogAndProfile();
+      lastSaveProfileAt = result.savedAt || new Date().toISOString();
+      profileSaveResult.textContent = "Saved to " + (result.savedPath || result.profileConfigPath) + " | Profile " + result.profileKey + " | " + lastSaveProfileAt + " | Preview/test only. Production unchanged.";
+      updateRenderSnapshotDebug();
       setStatus(true, "Lab Profile Saved", "Saved values affect Template Lab preview/test rendering only.");
     } catch (error) {
       profileSaveResult.textContent = error.message;
@@ -1548,21 +2048,18 @@
 
   async function promoteDynamicTemplate() {
     exportProfileJson();
-    if (!latestPreview || !latestPreview.renderedZpl || !latestRenderedPayload) {
-      var noRenderMessage = "Render/Re-render before promoting. No successful render result exists for the selected template/profile.";
-      if (promoteTemplateResult) promoteTemplateResult.textContent = noRenderMessage;
-      setStatus(false, "Promotion Blocked", noRenderMessage);
-      return;
-    }
-    if (currentRenderSignature() !== latestRenderSignature) {
-      var staleMessage = "Render/Re-render before promoting. Current controls have changed since the last render.";
-      if (promoteTemplateResult) promoteTemplateResult.textContent = staleMessage;
-      setStatus(false, "Promotion Blocked", staleMessage);
-      return;
-    }
-    var promotePayload = clonePlain(latestRenderedPayload);
+    var snapshot = snapshotOrBlock(promoteTemplateResult, "Promotion Blocked");
+    if (!snapshot) return;
+    var promotePayload = clonePlain(snapshot.renderedPayload || {});
     promotePayload.promotionSource = "current_rendered_browser_controls";
-    promotePayload.renderedPayloadBytes = renderedPayloadBytes();
+    promotePayload.renderId = snapshot.renderId;
+    promotePayload.renderedAt = snapshot.renderedAt;
+    promotePayload.renderedZplSha256 = snapshot.renderedZplSha256;
+    promotePayload.dynamicTemplateZpl = snapshot.dynamicTemplateZpl;
+    promotePayload.dynamicTemplateSha256 = snapshot.dynamicTemplateSha256;
+    promotePayload.renderedPayloadBytes = snapshot.payloadBytes || renderedPayloadBytes();
+    promotePayload.payloadBytes = snapshot.payloadBytes || renderedPayloadBytes();
+    promotePayload.profileOverrides = clonePlain(snapshot.profileOverrides || promotePayload.profileOverrides || {});
     if (!window.confirm(buildPromotionConfirmationSummary(promotePayload))) return;
     promoteTemplateButton.disabled = true;
     if (promoteTemplateResult) promoteTemplateResult.textContent = "Promoting dynamic template...";
@@ -1572,16 +2069,17 @@
         promoteTemplateResult.textContent = [
           "Promoted " + result.updatedTemplatePath,
           "Backup: " + result.backupPath,
+          "RenderId: " + (result.renderId || snapshot.renderId || "-"),
+          "Digest: " + (result.promotedDigest || result.digest || "-"),
           "Payload: " + (result.payloadBytes || result.bytes || 0) + " bytes",
           "Changed sections: " + ((result.changedProfileSections || []).join(", ") || "none")
         ].join(" | ");
       }
+      lastPromoteAt = new Date().toISOString();
+      currentRenderSnapshot.promotedAt = lastPromoteAt;
+      currentRenderSnapshot.promoteResult = clonePlain(result);
+      updateRenderSnapshotDebug();
       setStatus(true, "Dynamic Template Promoted", "Production source template was updated with dynamic tokens preserved.");
-      await loadSelectedProfileValues();
-      latestPreview = null;
-      latestRenderedPayload = null;
-      latestRenderSignature = "";
-      updateRenderState(false);
     } catch (error) {
       if (promoteTemplateResult) promoteTemplateResult.textContent = error.message;
       setStatus(false, "Promotion Failed", error.message);
@@ -1623,12 +2121,18 @@
       exportProfileJson();
       updateCalibrationSummary();
       updateRenderState(false);
+      var section = number.closest("[data-area-section]");
+      var firstArea = String(section && section.getAttribute("data-area-section") || "").split(/\s+/).map(areaKeyToPreviewArea).find(Boolean);
+      if (firstArea) highlightPreviewArea(firstArea);
     });
     range.addEventListener("input", function () {
       number.value = range.value;
       exportProfileJson();
       updateCalibrationSummary();
       updateRenderState(false);
+      var section = range.closest("[data-area-section]");
+      var firstArea = String(section && section.getAttribute("data-area-section") || "").split(/\s+/).map(areaKeyToPreviewArea).find(Boolean);
+      if (firstArea) highlightPreviewArea(firstArea);
     });
   }
 
@@ -1642,14 +2146,48 @@
         updateCalibrationSummary();
         updateSampleSummary();
         updateRenderState(false);
+        var section = element.closest("[data-area-section]");
+        var firstArea = String(section && section.getAttribute("data-area-section") || "").split(/\s+/).map(areaKeyToPreviewArea).find(Boolean);
+        if (firstArea) highlightPreviewArea(firstArea);
       });
     });
   }
 
+  function wireQuickEditPanel() {
+    if (!quickEditPanel) return;
+    quickEditPanel.addEventListener("input", function (event) {
+      var controlId = event.target && event.target.getAttribute("data-quick-control");
+      if (!controlId) return;
+      updateControlFromQuickEdit(controlId, event.target.value);
+    });
+    quickEditPanel.addEventListener("click", function (event) {
+      var button = event.target.closest("[data-nudge-axis]");
+      if (!button) return;
+      nudgeSelectedObject(button.getAttribute("data-nudge-axis"), Number(button.getAttribute("data-nudge-delta")));
+    });
+  }
+
+  function wireKeyboardNudges() {
+    document.addEventListener("keydown", function (event) {
+      if (!selectedPreviewObjectId || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+      var active = document.activeElement;
+      if (active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return;
+      var amount = event.shiftKey ? 5 : 1;
+      if (event.key === "ArrowLeft") nudgeSelectedObject("x", -amount);
+      if (event.key === "ArrowRight") nudgeSelectedObject("x", amount);
+      if (event.key === "ArrowUp") nudgeSelectedObject("y", -amount);
+      if (event.key === "ArrowDown") nudgeSelectedObject("y", amount);
+      event.preventDefault();
+    });
+  }
+
+  buildBorderVisibilityControls();
   buildAreaFilterPills();
   buildFieldFitControls();
   wireFieldSelection();
   wireProfileExportOnInput();
+  wireQuickEditPanel();
+  wireKeyboardNudges();
   templateSelect.addEventListener("change", function () {
     applyTemplateDefaults().then(function () {
       updateRenderState(false);
@@ -1664,9 +2202,11 @@
   downloadButton.addEventListener("click", downloadRenderedZpl);
   sendButton.addEventListener("click", sendProofPrint);
   if (printCalibrationButton) printCalibrationButton.addEventListener("click", printCalibrationGrid);
+  if (printSettingsReportButton) printSettingsReportButton.addEventListener("click", printSettingsReport);
   loadProfileButton.addEventListener("click", loadSavedProfileOverrides);
   if (reloadTemplateButton) reloadTemplateButton.addEventListener("click", loadSelectedProfileValues);
   if (compareTemplateButton) compareTemplateButton.addEventListener("click", compareCurrentVsStaged);
+  if (compareProductionTemplateButton) compareProductionTemplateButton.addEventListener("click", compareCurrentRenderVsProductionTemplate);
   if (applyFieldBoostsButton) applyFieldBoostsButton.addEventListener("click", applyGroupedFieldAdjustments);
   exportProfileButton.addEventListener("click", exportProfileJson);
   saveProfileButton.addEventListener("click", saveProfile);
@@ -1678,6 +2218,7 @@
   if (editSampleInputsButton) editSampleInputsButton.addEventListener("click", showSampleInputs);
   if (uploadLogoAssetButton) uploadLogoAssetButton.addEventListener("click", uploadLogoAsset);
   if (selectLogoAssetButton) selectLogoAssetButton.addEventListener("click", selectLogoAsset);
+  window.addEventListener("beforeprint", buildPrintSettingsReport);
 
   loadCatalog().then(renderTemplate).catch(function (error) {
     setStatus(false, "Template Lab Unavailable", error.message);

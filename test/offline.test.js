@@ -417,7 +417,9 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.text.includes("Copy JSON"), true);
   assert.equal(result.text.includes("Load Saved Profile"), true);
   assert.equal(result.text.includes("Promote Dynamic Template to Production"), true);
-  assert.equal(result.text.includes("Promote uses current rendered controls"), true);
+  assert.equal(result.text.includes("Proof print uses last rendered ZPL"), true);
+  assert.equal(result.text.includes("Promote writes last rendered dynamic template"), true);
+  assert.equal(result.text.includes("Save Lab Profile saves profile settings only"), true);
   assert.equal(result.text.includes("Primary Action Bar"), true);
   assert.equal(result.text.includes("Sample Inputs"), true);
   assert.equal(result.text.includes("Edit Sample Inputs"), true);
@@ -431,6 +433,8 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.text.includes("Scale border thickness with label scale"), true);
   assert.equal(result.text.includes("Reset station profile to template defaults"), true);
   assert.equal(result.text.includes("Print Calibration Grid"), true);
+  assert.equal(result.text.includes("Print Settings Report"), true);
+  assert.equal(result.text.includes("Include rendered ZPL in print report"), true);
   assert.equal(result.text.includes("Send Proof Print"), true);
   assert.equal(result.text.includes("Confirm proof print"), true);
   assert.equal(result.text.includes("data-area-section=\"sample-inputs\""), true);
@@ -441,6 +445,12 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.text.includes("data-area-section=\"rendered-zpl\""), true);
   assert.match(result.text, /<details class="panel zpl-code-panel" data-area-section="rendered-zpl">/);
   assert.equal(result.text.includes("zpl-preview-frame"), true);
+  assert.equal(result.text.includes("previewSvgHost"), true);
+  assert.equal(result.text.includes("selectedPreviewObjectPanel"), true);
+  assert.equal(result.text.includes("quickEditPanel"), true);
+  assert.equal(result.text.includes("renderSnapshotDebug"), true);
+  assert.equal(result.text.includes("templateLabPrintReport"), true);
+  assert.equal(result.text.includes("Border Visibility"), true);
   assert.equal(result.text.includes("globalScaleXRange"), true);
   assert.equal(result.text.includes("proofTargetLine"), true);
   assert.equal(result.text.includes("calibrationSummary"), true);
@@ -450,11 +460,29 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.text.includes("value=\"Tolling\""), true);
 
   const templateLabScript = fs.readFileSync(path.join(REPO_ROOT, "public", "offline", "template-lab.js"), "utf8");
+  const offlineCss = fs.readFileSync(path.join(REPO_ROOT, "public", "offline", "offline.css"), "utf8");
   assert.equal(templateLabScript.includes("P8: Object.freeze({ ip: \"192.168.50.214\", port: 9100 })"), true);
   assert.equal(templateLabScript.includes("P8: Object.freeze({ ip: \"192.168.7.122\", port: 9100 })"), true);
   assert.equal(templateLabScript.includes("validateProofPrinterTarget"), true);
   assert.equal(templateLabScript.includes("latestRenderedPayload"), true);
-  assert.equal(templateLabScript.includes("Render/Re-render before promoting. Current controls have changed since the last render."), true);
+  assert.equal(templateLabScript.includes("currentRenderSnapshot"), true);
+  assert.equal(templateLabScript.includes("Render/Re-render before sending or promoting. Current controls have changed since the last render."), true);
+  assert.equal(templateLabScript.includes("snapshotOrBlock"), true);
+  assert.equal(templateLabScript.includes("renderedZplSha256"), true);
+  assert.equal(templateLabScript.includes("dynamicTemplateSha256"), true);
+  assert.equal(templateLabScript.includes("wirePreviewObjectHandlers"), true);
+  assert.equal(templateLabScript.includes("selectPreviewObject"), true);
+  assert.equal(templateLabScript.includes("renderQuickEditPanel"), true);
+  assert.equal(templateLabScript.includes("data-quick-control"), true);
+  assert.equal(templateLabScript.includes("borderVisibilityDefinitions"), true);
+  assert.equal(templateLabScript.includes("Color border"), true);
+  assert.equal(templateLabScript.includes("Bottom grid/footer row border"), true);
+  assert.equal(templateLabScript.includes("collectBorderVisibility"), true);
+  assert.equal(templateLabScript.includes("compareCurrentRenderVsProductionTemplate"), true);
+  assert.equal(templateLabScript.includes("buildPrintSettingsReport"), true);
+  assert.equal(offlineCss.includes("@media print"), true);
+  assert.equal(offlineCss.includes(".template-lab-print-report"), true);
+  assert.equal(offlineCss.includes(".preview-object-selected"), true);
   assert.equal(templateLabScript.includes("buildAreaFilterPills"), true);
   assert.equal(templateLabScript.includes("Tuning Mode"), true);
   assert.equal(templateLabScript.includes("Preview + Actions"), true);
@@ -550,6 +578,13 @@ test("template lab page, preview, and test send stay outside production queue", 
   result = await request("POST", "/api/print/template-preview", { body: previewBody });
   assert.equal(result.status, 200);
   assert.equal(result.json.ok, true);
+  assert.match(result.json.renderId, /^tl-/);
+  assert.match(result.json.renderedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(result.json.renderedZplSha256, /^[a-f0-9]{64}$/);
+  assert.match(result.json.dynamicTemplateSha256, /^[a-f0-9]{64}$/);
+  assert.equal(result.json.dynamicTemplateZpl.includes("{{lotNumber}}"), true);
+  assert.equal(result.json.dynamicTemplateZpl.includes("PT000086"), false);
+  assert.equal(result.json.payloadBytes, Buffer.byteLength(result.json.renderedZpl, "utf8"));
   assert.equal(result.json.renderedZpl.includes("^FDLA,PT000086^FS"), true);
   assert.equal(result.json.metadata.qr.payload, "PT000086");
   assert.equal(result.json.metadata.qr.payloadTemplate, "{{lotNumber}}");
@@ -561,6 +596,15 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.json.metadata.previewMode, "approximate");
   assert.equal(result.json.imagePreview.mode, "approximate");
   assert.equal(result.json.imagePreview.data.imageUrl.startsWith("data:image/svg+xml;base64,"), true);
+  assert.equal(result.json.imagePreview.data.svg.includes("data-area="), true);
+  assert.equal(result.json.imagePreview.data.svg.includes("data-object-id="), true);
+  assert.equal(result.json.imagePreview.data.svg.includes("data-control-key="), true);
+  assert.equal(Array.isArray(result.json.elementMap), true);
+  assert.equal(Array.isArray(result.json.geometryMap), true);
+  assert.equal(result.json.geometryMap.some((item) => item.id === "qr" && item.area === "qr"), true);
+  assert.equal(result.json.geometryMap.some((item) => item.id === "logo" && item.area === "logo"), true);
+  assert.equal(result.json.geometryMap.some((item) => String(item.id).startsWith("bottomGrid.")), true);
+  assert.equal(result.json.metadata.geometryMap.length, result.json.geometryMap.length);
   assert.equal(result.json.metadata.qrDetected, true);
   assert.equal(result.json.metadata.logoDetected, true);
   assert.equal(Array.isArray(result.json.metadata.unsupportedZplCommands), true);
@@ -590,9 +634,9 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.status, 200);
   assert.equal(result.json.renderedZpl.includes("^FO117,223\n^BQN,2,7^FDLA,PT000086^FS"), true);
   assert.equal(result.json.renderedZpl.includes("^FO667,44\n^GFA,"), true);
-  assert.equal(result.json.metadata.fitDebug.color.boxW, 99);
+  assert.equal(result.json.metadata.fitDebug.color.boxW, 101);
   assert.equal(result.json.metadata.fitDebug.color.borderThickness, 3);
-  assert.equal(result.json.metadata.fitDebug.productDescription.boxW, 222);
+  assert.equal(result.json.metadata.fitDebug.productDescription.boxW, 226);
   assert.equal(result.json.renderedZpl.includes("^FO45,64"), true);
   assert.equal(result.json.renderedZpl.includes("^FB226,1,0,L,0"), true);
   assert.equal(result.json.metadata.profile.scaleX, 1.02);
@@ -630,6 +674,71 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.json.metadata.profile.bottomGrid.borderThickness, 5);
   assert.equal(result.json.metadata.profile.fieldGeometryOverrides.colorText.border.thickness, 7);
 
+  const borderToggleOverrides = {
+    bottomGrid: {
+      x: 20,
+      y: 900,
+      width: 500,
+      height: 80,
+      borderThickness: 5,
+      columnCount: 5,
+      columnLineThickness: 2
+    },
+    fieldGeometryOverrides: {
+      colorText: { border: { thickness: 7, width: 189, height: 162 } },
+      tollingText: { border: { thickness: 8, width: 340, height: 73 } }
+    }
+  };
+
+  result = await request("POST", "/api/print/template-preview", {
+    body: {
+      ...previewBody,
+      tolling: "Tolling",
+      profileOverrides: {
+        ...borderToggleOverrides,
+        borderVisibility: { color: false, tolling: true, bottomGrid: true }
+      }
+    }
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.json.renderedZpl.includes("^GB189,162,7"), false);
+  assert.equal(result.json.renderedZpl.includes("^GB340,73,8"), true);
+  assert.equal(result.json.renderedZpl.includes("^FO20,900\n^GB500,80,5^FS"), true);
+
+  result = await request("POST", "/api/print/template-preview", {
+    body: {
+      ...previewBody,
+      tolling: "Tolling",
+      profileOverrides: {
+        ...borderToggleOverrides,
+        borderVisibility: { color: true, tolling: false, bottomGrid: true }
+      }
+    }
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.json.renderedZpl.includes("^GB189,162,7"), true);
+  assert.equal(result.json.renderedZpl.includes("^GB340,73,8"), false);
+  assert.equal(result.json.renderedZpl.includes("^FO20,900\n^GB500,80,5^FS"), true);
+
+  result = await request("POST", "/api/print/template-preview", {
+    body: {
+      ...previewBody,
+      tolling: "Tolling",
+      profileOverrides: {
+        ...borderToggleOverrides,
+        borderVisibility: { color: true, tolling: true, bottomGrid: false }
+      }
+    }
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.json.renderedZpl.includes("^GB189,162,7"), true);
+  assert.equal(result.json.renderedZpl.includes("^GB340,73,8"), true);
+  assert.equal(result.json.renderedZpl.includes("^FO20,900\n^GB500,80,5^FS"), false);
+  assert.equal(result.json.renderedZpl.includes("Template Lab Bottom Grid/Footer Row hidden"), true);
+
+  const profileSaveTemplatePath = zplTemplatePath("RFID-RAW-P1.template.zpl");
+  const profileSaveTemplateBefore = fs.readFileSync(profileSaveTemplatePath, "utf8");
+  const profileSaveQueueCountBefore = fs.existsSync(queueDir) ? fs.readdirSync(queueDir).length : 0;
   result = await request("POST", "/api/print/template-lab/profile", {
     body: {
       profileKey: "P1:RAW",
@@ -641,7 +750,13 @@ test("template lab page, preview, and test send stay outside production queue", 
   });
   assert.equal(result.status, 200);
   assert.equal(result.json.ok, true);
+  assert.equal(result.json.savedPath, process.env.ZPL_TEMPLATE_LAB_PROFILE_PATH);
+  assert.match(result.json.savedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(result.json.previewOnly, true);
+  assert.equal(result.json.productionUnchanged, true);
   assert.equal(fs.existsSync(path.join(tempDir, "template-lab-profiles.json")), true);
+  assert.equal(fs.readFileSync(profileSaveTemplatePath, "utf8"), profileSaveTemplateBefore);
+  assert.equal(fs.existsSync(queueDir) ? fs.readdirSync(queueDir).length : 0, profileSaveQueueCountBefore);
 
   result = await request("GET", "/api/print/template-lab/catalog");
   const savedProfile = result.json.profiles.find((profile) => profile.key === "P1:RAW");
@@ -695,25 +810,42 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.json.error, "DYNAMIC_TEMPLATE_REQUIRED");
 
   const promoteTemplatePath = zplTemplatePath("RFID-RAW-P1.template.zpl");
-  result = await request("POST", "/api/print/template-lab/promote", {
+  const promoteOverrides = {
+    qr: { x: 130, y: 240, magnification: 9 },
+    fieldGeometryOverrides: {
+      lotNumber: { x: 100, y: 326, fontHeight: 111, fontWidth: 145, originCommand: "FT" }
+    },
+    fieldFitDefinitions: { color: { boxWidth: 111, maxChars: 5 } }
+  };
+  const promotePreview = await request("POST", "/api/print/template-preview", {
     body: {
       template: "RFID-RAW-P1.template.zpl",
       profileKey: "P1:RAW",
-      profileOverrides: {
-        qr: { x: 130, y: 240, magnification: 9 },
-        fieldGeometryOverrides: {
-          lotNumber: { x: 100, y: 326, fontHeight: 111, fontWidth: 145, originCommand: "FT" }
-        },
-        fieldFitDefinitions: { color: { boxWidth: 111, maxChars: 5 } }
-      },
-      renderedPayloadBytes: 2504
+      profileOverrides: promoteOverrides
+    }
+  });
+  assert.equal(promotePreview.status, 200);
+  const proofSnapshotRenderedZpl = promotePreview.json.renderedZpl;
+  result = await request("POST", "/api/print/template-lab/promote", {
+    body: {
+      template: promotePreview.json.template,
+      profileKey: promotePreview.json.profileKey,
+      profileOverrides: promotePreview.json.profileOverrides,
+      renderId: promotePreview.json.renderId,
+      renderedAt: promotePreview.json.renderedAt,
+      renderedZplSha256: promotePreview.json.renderedZplSha256,
+      dynamicTemplateZpl: promotePreview.json.dynamicTemplateZpl,
+      dynamicTemplateSha256: promotePreview.json.dynamicTemplateSha256,
+      renderedPayloadBytes: promotePreview.json.payloadBytes
     }
   });
   assert.equal(result.status, 200);
   assert.equal(result.json.ok, true);
   assert.equal(result.json.templatePath, promoteTemplatePath);
   assert.equal(fs.existsSync(result.json.backupPath), true);
-  assert.equal(result.json.payloadBytes, 2504);
+  assert.equal(result.json.renderId, promotePreview.json.renderId);
+  assert.equal(result.json.promotedDigest, promotePreview.json.dynamicTemplateSha256);
+  assert.equal(result.json.payloadBytes, promotePreview.json.payloadBytes);
   assert.equal(result.json.changedProfileSections.includes("qr"), true);
   assert.equal(result.json.changedProfileSections.includes("fieldGeometry"), true);
   assert.equal(result.json.verification.rfidCommandsUnchanged, true);
@@ -727,6 +859,31 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(promotedSource.includes("^FT100,326\n^A0N,111,145^FD{{lotNumber}}^FS"), true);
   assert.equal(promotedSource.includes("TEMPLATE_LAB_FIELD_FIT_DEFINITIONS_BASE64:"), true);
   assert.equal(promotedSource.includes("^FB{{colorBoxW}},{{colorMaxLines}},0,{{colorAlignment}},0^FD{{colorText}}"), true);
+
+  let snapshotProofCount = 0;
+  serverModule.setTemplateTestSendFunction(async ({ zpl }) => {
+    snapshotProofCount += 1;
+    assert.equal(zpl, proofSnapshotRenderedZpl);
+    return { bytesSent: Buffer.byteLength(zpl, "utf8") };
+  });
+  result = await request("POST", "/api/print/template-test-send", {
+    body: {
+      template: promotePreview.json.template,
+      profileKey: promotePreview.json.profileKey,
+      renderId: promotePreview.json.renderId,
+      renderedZpl: proofSnapshotRenderedZpl,
+      renderedZplSha256: promotePreview.json.renderedZplSha256,
+      sampleData: promotePreview.json.sampleData,
+      printerIp: "127.0.0.1",
+      port: 9100,
+      confirmTestPrint: true
+    }
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.json.renderSource, "current-render-snapshot");
+  assert.equal(result.json.renderedZplSha256, promotePreview.json.renderedZplSha256);
+  assert.equal(snapshotProofCount, 1);
+  serverModule.resetTemplateTestSendFunction();
 
   result = await request("POST", "/api/print/template-test-send", {
     body: { ...previewBody, printerIp: "127.0.0.1", port: 9100 }

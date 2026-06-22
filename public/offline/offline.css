@@ -976,6 +976,32 @@ button:focus,
   min-width: 142px;
 }
 
+.snapshot-policy-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.snapshot-debug-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 10px 0;
+}
+
+.snapshot-debug-grid div {
+  background: #f7f9fd;
+  border: 1px solid #d6deea;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.snapshot-debug-grid strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
 .proof-confirm-inline {
   background: #f7f9fd;
   border: 1px solid #d6deea;
@@ -1080,6 +1106,91 @@ button:focus,
   object-fit: contain;
 }
 
+.zpl-preview-svg-host {
+  background: #ffffff;
+  border: 1px solid #d6deea;
+  box-shadow: 0 10px 24px rgba(20, 35, 60, 0.16);
+  display: block;
+  max-height: 760px;
+  max-width: 100%;
+  overflow: auto;
+}
+
+.zpl-preview-svg-host svg {
+  display: block;
+  height: auto;
+  max-width: 100%;
+}
+
+.preview-object {
+  cursor: pointer;
+  outline: none;
+}
+
+.preview-object-hover > rect,
+.preview-object-hover > line,
+.preview-object-hover > text,
+.preview-object-hover > path,
+.preview-object-active-area > rect,
+.preview-object-active-area > line,
+.preview-object-active-area > text,
+.preview-object-active-area > path {
+  filter: drop-shadow(0 0 5px rgba(37, 64, 143, 0.65));
+  stroke: #ed1c24;
+}
+
+.preview-object-selected > rect,
+.preview-object-selected > line,
+.preview-object-selected > text,
+.preview-object-selected > path {
+  filter: drop-shadow(0 0 7px rgba(193, 45, 45, 0.72));
+  stroke: #c12d2d;
+  stroke-width: 5px;
+}
+
+.quick-edit-panel {
+  background: #ffffff;
+  border: 1px solid #d6deea;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.quick-edit-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.quick-edit-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.quick-edit-nudges {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.quick-edit-nudges button {
+  min-height: 34px;
+  padding: 6px 8px;
+}
+
+.border-toggle-grid .checkbox-label {
+  align-self: stretch;
+}
+
+.template-lab-print-report {
+  display: none;
+}
+
 .zpl-code-panel {
   padding: 0;
 }
@@ -1147,7 +1258,8 @@ pre {
   .lab-form-grid,
   .lab-tuning-grid,
   .field-fit-controls,
-  .field-fit-fieldset {
+  .field-fit-fieldset,
+  .snapshot-debug-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1221,6 +1333,9 @@ pre {
   .lab-tuning-grid,
   .field-fit-controls,
   .field-fit-fieldset,
+  .snapshot-debug-grid,
+  .quick-edit-grid,
+  .quick-edit-nudges,
   .queue-counts {
     grid-template-columns: 1fr;
   }
@@ -1240,5 +1355,80 @@ pre {
 
   .actions button {
     width: 100%;
+  }
+}
+
+@media print {
+  html,
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-size: 11pt;
+    min-height: auto;
+  }
+
+  body::before,
+  body::after {
+    display: none !important;
+  }
+
+  .template-lab-shell {
+    margin: 0;
+    width: 100%;
+  }
+
+  .template-lab-shell > :not(.template-lab-print-report) {
+    display: none !important;
+  }
+
+  .template-lab-print-report {
+    display: block !important;
+    padding: 0;
+    width: 100%;
+  }
+
+  .template-lab-print-report h1 {
+    color: #000000;
+    font-size: 18pt;
+    margin: 0 0 14pt;
+  }
+
+  .template-lab-print-report section {
+    break-inside: avoid;
+    border-top: 1px solid #999999;
+    margin: 0 0 12pt;
+    padding-top: 8pt;
+  }
+
+  .template-lab-print-report h2 {
+    color: #000000;
+    font-size: 13pt;
+    margin: 0 0 6pt;
+  }
+
+  .template-lab-print-report dl {
+    display: grid;
+    gap: 3pt 10pt;
+    grid-template-columns: 150pt minmax(0, 1fr);
+    margin: 0;
+  }
+
+  .template-lab-print-report dt {
+    font-weight: 700;
+  }
+
+  .template-lab-print-report dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .template-lab-print-report pre {
+    background: #ffffff;
+    border: 1px solid #999999;
+    color: #000000;
+    max-height: none;
+    overflow: visible;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 }

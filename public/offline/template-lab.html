@@ -46,7 +46,7 @@
         <div id="areaFilterPills" class="area-filter-pills" aria-label="Template Lab area filters"></div>
         <div class="filter-help-line">
           <span>Filters only change visible controls; they do not change label data, rendering, promotion, or proof printing.</span>
-          <span id="promotionCurrentControlsNotice" class="template-badge template-badge-enabled">Promote uses current rendered controls</span>
+          <span id="promotionCurrentControlsNotice" class="template-badge template-badge-enabled">Promote writes last rendered dynamic template</span>
         </div>
       </section>
 
@@ -76,7 +76,18 @@
           </label>
           <button id="sendButton" type="button">Send Proof Print</button>
           <button id="printCalibrationButton" class="secondary" type="button">Print Calibration Grid</button>
+          <button id="printSettingsReportButton" class="secondary" type="button">Print Settings Report</button>
+          <label class="checkbox-label proof-confirm-inline" title="Include rendered ZPL at the end of the printer-friendly settings report.">
+            <input id="includeRenderedZplInReport" type="checkbox">
+            Include rendered ZPL in print report
+          </label>
         </div>
+        <div class="snapshot-policy-row">
+          <span class="template-badge template-badge-enabled">Proof print uses last rendered ZPL</span>
+          <span class="template-badge template-badge-enabled">Promote writes last rendered dynamic template</span>
+          <span class="template-badge template-badge-enabled">Save Lab Profile saves profile settings only</span>
+        </div>
+        <div id="renderSnapshotDebug" class="snapshot-debug-grid" aria-live="polite"></div>
         <div id="sendResult" class="muted-line"></div>
       </section>
     </div>
@@ -195,6 +206,12 @@
             </div>
           </details>
 
+          <details class="tuning-card lab-accordion" data-area-section="whole-label lot-number box-number material-type color product-description po pounds tolling bottom-grid qr logo" open>
+            <summary>Border Visibility</summary>
+            <p class="field-help">These toggles hide only the named preview/test border area. Text stays in place, and the Bottom Grid/Footer Row is controlled separately from Color, Material, and Tolling field borders.</p>
+            <div id="borderVisibilityControls" class="grid lab-tuning-grid border-toggle-grid"></div>
+          </details>
+
           <details class="tuning-card lab-accordion" data-area-section="logo" open>
             <summary>Logo</summary>
             <p class="field-help">Logo controls apply to the static ^GFA logo where enabled. Upload a higher quality PNG to generate a printer-safe ^GFA asset under the controlled ZPL assets folder.</p>
@@ -262,6 +279,7 @@
               <button id="loadProfileButton" class="secondary" type="button">Load Saved Profile</button>
               <button id="reloadTemplateButton" class="secondary" type="button">Reload From Current Template</button>
               <button id="compareTemplateButton" class="secondary" type="button">Compare Current vs Staged</button>
+              <button id="compareProductionTemplateButton" class="secondary" type="button">Compare current render vs production template</button>
               <button id="copyProfileButton" class="secondary" type="button">Copy JSON</button>
               <button id="downloadProfileButton" class="secondary" type="button">Download JSON</button>
               <button id="resetProfileButton" class="secondary" type="button">Reset station profile to template defaults</button>
@@ -283,9 +301,12 @@
           <div id="lastRenderedAt" class="muted-line">Last rendered at -</div>
           <div id="previewFrame" class="zpl-preview-frame">
             <div id="previewPlaceholder" class="preview-placeholder">Render to see the label preview.</div>
+            <div id="previewSvgHost" class="zpl-preview-svg-host hidden" aria-label="Interactive approximate ZPL preview"></div>
             <img id="previewImage" class="zpl-preview-image hidden" alt="Rendered ZPL preview">
           </div>
           <div id="previewStatus" class="muted-line"></div>
+          <div id="selectedPreviewObjectPanel" class="selected-field-panel">Selected object: -</div>
+          <div id="quickEditPanel" class="quick-edit-panel hidden"></div>
         </section>
 
         <section class="panel" data-area-section="metadata">
@@ -313,6 +334,11 @@
         </details>
       </div>
     </div>
+
+    <section id="templateLabPrintReport" class="template-lab-print-report" aria-label="Template Lab print settings report">
+      <h1>PRI Direct-ZPL Template Lab Settings</h1>
+      <div id="templateLabPrintReportBody"></div>
+    </section>
   </main>
 
   <script src="/offline/template-lab.js"></script>
