@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PRI Direct-ZPL Template Quick Edit</title>
+  <link rel="stylesheet" href="/offline/offline.css">
+</head>
+<body>
+  <main class="page-shell quick-edit-shell">
+    <header class="app-header quick-edit-header">
+      <div class="logo-slot logo-slot-left">
+        <img class="brand-logo pri-logo" src="/offline/assets/pri-logo.png" alt="PRI logo">
+      </div>
+
+      <div class="header-title-block">
+        <p class="brand-kicker">PRI Template Lab</p>
+        <h1>Template Quick Edit</h1>
+        <span id="qeHeaderStatus" class="status-pill status-pill-disabled">Status: Loading</span>
+      </div>
+
+      <div class="logo-slot logo-slot-right">
+        <img class="brand-logo innovation-logo" src="/offline/assets/innovation-logo.png" alt="Innovation Team logo">
+      </div>
+    </header>
+
+    <nav class="page-nav quick-edit-nav" aria-label="Quick edit navigation">
+      <a id="qeBackToLabButton" class="nav-button" href="/offline/template-lab">Back to Full Template Lab</a>
+      <a id="qePrintHealthLink" class="nav-button" href="/offline/print-health">Open Print Health</a>
+      <button id="qeExitButton" class="secondary nav-button-button" type="button">Exit Quick Edit</button>
+    </nav>
+
+    <section id="qeStatusBanner" class="status-banner status-disabled">
+      <div id="qeStatusTitle" class="status-title">Loading Quick Edit</div>
+      <div id="qeStatusMeta" class="status-message">Fetching approved direct-ZPL templates, profiles, and preview metadata...</div>
+      <div class="status-warning">Quick Edit proof sends bypass the production queue and require explicit confirmation.</div>
+    </section>
+
+    <section class="panel quick-edit-topbar" aria-label="Quick Edit command bar">
+      <form id="qeForm" class="quick-edit-command-grid">
+        <label>
+          Template
+          <select id="qeTemplate" name="template" required></select>
+        </label>
+        <label>
+          Printer/Profile
+          <select id="qeProfileKey" name="profileKey" required></select>
+        </label>
+        <label>
+          Printer IP
+          <input id="qePrinterIp" name="printerIp" value="192.168.50.239" autocomplete="off">
+        </label>
+        <label>
+          Port
+          <input id="qePrinterPort" name="printerPort" type="number" min="1" max="65535" value="9100" autocomplete="off">
+        </label>
+        <div class="actions quick-edit-actions">
+          <button id="qeRenderButton" type="button">Render / Re-render</button>
+          <label class="checkbox-label proof-confirm-inline">
+            <input id="qeConfirmProof" type="checkbox">
+            Confirm proof print
+          </label>
+          <button id="qeSendProofButton" type="button">Send Proof Print</button>
+          <button id="qeSaveProfileButton" type="button">Save Lab Profile</button>
+          <button id="qeExportProfileButton" class="secondary" type="button">Export Profile JSON</button>
+          <button id="qePrintReportButton" class="secondary" type="button">Print Quick Edit Settings</button>
+        </div>
+      </form>
+
+      <div class="template-badge-row quick-edit-badges" aria-live="polite">
+        <span id="qeTemplateBadge" class="template-badge">Template: -</span>
+        <span id="qeProfileBadge" class="template-badge">Profile: -</span>
+        <span id="qePrinterBadge" class="template-badge">Printer: -</span>
+        <span id="qePreviewModeBadge" class="template-badge">Preview: -</span>
+        <span id="qeRenderStateBadge" class="template-badge template-badge-warning">Stale: render needed</span>
+        <span id="qeLastRenderBadge" class="template-badge">Last render: -</span>
+      </div>
+    </section>
+
+    <section class="quick-edit-workbench" aria-label="Quick Edit visual tuning workbench">
+      <section class="panel quick-edit-preview-panel" aria-label="Large interactive label preview">
+        <div class="quick-edit-panel-header">
+          <div>
+            <h2>Preview Render</h2>
+            <div id="qePreviewStatus" class="muted-line">Render to see the label preview.</div>
+          </div>
+          <div class="actions compact-actions">
+            <label>
+              Zoom
+              <select id="qeZoomSelect">
+                <option value="fit">Fit</option>
+                <option value="fit-25">Fit -25%</option>
+                <option value="fit-50">Fit -50%</option>
+                <option value="fit-75">Fit -75%</option>
+                <option value="0.25">25%</option>
+                <option value="0.5">50%</option>
+                <option value="0.75">75%</option>
+                <option value="1">100%</option>
+                <option value="1.25">125%</option>
+                <option value="1.5">150%</option>
+                <option value="2">200%</option>
+              </select>
+            </label>
+            <span id="qeZoomStatus" class="template-badge template-badge-neutral quick-edit-zoom-status">Zoom: Fit | Scale: -</span>
+            <label class="checkbox-label compact-checkbox" title="Show a light grid behind the approximate label preview.">
+              <input id="qeGridToggle" type="checkbox">
+              Grid
+            </label>
+          </div>
+        </div>
+
+        <div id="qePreviewFrame" class="quick-edit-preview-frame zpl-preview-frame">
+          <div id="qePreviewPlaceholder" class="preview-placeholder">Render to see the label preview.</div>
+          <div id="qePreviewSvgHost" class="quick-edit-preview-svg-host zpl-preview-svg-host hidden" aria-label="Interactive approximate ZPL preview"></div>
+          <img id="qePreviewImage" class="quick-edit-preview-image zpl-preview-image hidden" alt="Rendered ZPL preview">
+        </div>
+
+        <div id="qeSampleSummary" class="quick-edit-sample-line">Sample: lot PT000086 | box 52 | material PP | color Black | tolling Tolling | pounds 1200</div>
+
+        <details id="qeSampleDrawer" class="lab-accordion quick-edit-sample-drawer">
+          <summary>Edit Sample Data</summary>
+          <div class="grid quick-edit-sample-grid">
+            <label>Lot Number<input id="qeLotNumber" name="lotNumber" value="PT000086" autocomplete="off"></label>
+            <label>Box Number<input id="qeBoxNumber" name="boxNumber" value="52" autocomplete="off"></label>
+            <label>RFID (optional)<input id="qeRfid" name="rfid" placeholder="Generated from lot + box when blank" autocomplete="off"></label>
+            <label>Pounds<input id="qePounds" name="pounds" value="1200" autocomplete="off"></label>
+            <label>Material Type<input id="qeMaterialType" name="materialType" value="PP" autocomplete="off"></label>
+            <label>Color<input id="qeColor" name="color" value="Black" autocomplete="off"></label>
+            <label>Tolling<input id="qeTolling" name="tolling" value="Tolling" autocomplete="off"></label>
+            <label>PO<input id="qePo" name="po" value="PO12345" autocomplete="off"></label>
+            <label class="quick-edit-span-2">Product Description<input id="qeProductDescription" name="productDescription" value="Template Lab Product" autocomplete="off"></label>
+          </div>
+        </details>
+
+        <details id="qeStateDrawer" class="lab-accordion quick-edit-state-drawer">
+          <summary>Render / Proof State</summary>
+          <div id="qeRenderDetails" class="snapshot-debug-grid"></div>
+          <div id="qeProofResult" class="muted-line"></div>
+          <div id="qeSaveResult" class="muted-line"></div>
+        </details>
+
+        <details id="qeExportDrawer" class="lab-accordion quick-edit-export-drawer">
+          <summary>Profile JSON</summary>
+          <textarea id="qeProfileJson" class="profile-json" spellcheck="false"></textarea>
+        </details>
+      </section>
+
+      <aside class="panel quick-edit-inspector" aria-label="Selected object inspector">
+        <div class="section-heading">
+          <span class="section-step">Edit</span>
+          <h2>Selected Object</h2>
+        </div>
+        <div id="qeSelectedObjectPanel" class="selected-field-panel">Selected object: click a preview object.</div>
+        <div id="qeLinkedControls" class="quick-edit-linked-controls muted-line">Linked controls: -</div>
+
+        <div id="qeInspectorControls" class="quick-edit-inspector-controls">
+          <p class="muted-line">Hover or click the rendered preview to identify label objects and quick-edit visual controls.</p>
+        </div>
+
+        <div id="qeNudgeControls" class="quick-edit-nudge-panel" aria-label="Nudge selected object">
+          <h3>Nudge</h3>
+          <div class="quick-edit-nudge-grid">
+            <button type="button" data-qe-nudge-axis="y" data-qe-nudge-delta="-5">Up 5</button>
+            <button type="button" data-qe-nudge-axis="y" data-qe-nudge-delta="-1">Up 1</button>
+            <button type="button" data-qe-nudge-axis="x" data-qe-nudge-delta="-5">Left 5</button>
+            <button type="button" data-qe-nudge-axis="x" data-qe-nudge-delta="-1">Left 1</button>
+            <button type="button" data-qe-nudge-axis="x" data-qe-nudge-delta="1">Right 1</button>
+            <button type="button" data-qe-nudge-axis="x" data-qe-nudge-delta="5">Right 5</button>
+            <button type="button" data-qe-nudge-axis="y" data-qe-nudge-delta="1">Down 1</button>
+            <button type="button" data-qe-nudge-axis="y" data-qe-nudge-delta="5">Down 5</button>
+          </div>
+          <div class="quick-edit-nudge-grid">
+            <button type="button" data-qe-nudge-axis="width" data-qe-nudge-delta="-5">W -5</button>
+            <button type="button" data-qe-nudge-axis="width" data-qe-nudge-delta="-1">W -1</button>
+            <button type="button" data-qe-nudge-axis="width" data-qe-nudge-delta="1">W +1</button>
+            <button type="button" data-qe-nudge-axis="width" data-qe-nudge-delta="5">W +5</button>
+            <button type="button" data-qe-nudge-axis="height" data-qe-nudge-delta="-5">H -5</button>
+            <button type="button" data-qe-nudge-axis="height" data-qe-nudge-delta="-1">H -1</button>
+            <button type="button" data-qe-nudge-axis="height" data-qe-nudge-delta="1">H +1</button>
+            <button type="button" data-qe-nudge-axis="height" data-qe-nudge-delta="5">H +5</button>
+          </div>
+        </div>
+
+        <div class="actions quick-edit-inspector-actions">
+          <button id="qeResetSelectedButton" class="secondary" type="button">Reset Selected Object</button>
+          <button id="qeShowInFullLabButton" class="secondary" type="button">Show in Full Lab</button>
+        </div>
+      </aside>
+    </section>
+
+    <dialog id="qeExitDialog" class="quick-edit-exit-dialog">
+      <form method="dialog">
+        <h2>Unsaved Quick Edit changes</h2>
+        <p>You have unsaved Quick Edit changes. Save Lab Profile, Export JSON, or discard changes?</p>
+        <div class="actions">
+          <button id="qeExitSaveButton" type="button">Save Lab Profile and Exit</button>
+          <button id="qeExitExportButton" class="secondary" type="button">Export JSON</button>
+          <button id="qeExitDiscardButton" class="danger" type="button">Discard and Exit</button>
+          <button id="qeExitCancelButton" class="secondary" type="button">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+
+    <section id="quickEditPrintReport" class="quick-edit-print-report" aria-label="Template Quick Edit print settings report">
+      <h1>PRI Direct-ZPL Template Quick Edit Settings</h1>
+      <div id="quickEditPrintReportBody"></div>
+    </section>
+  </main>
+
+  <script src="/offline/template-quick-edit.js"></script>
+</body>
+</html>

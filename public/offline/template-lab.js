@@ -22,6 +22,8 @@
   var promoteTemplateButton = document.getElementById("promoteTemplateButton");
   var printCalibrationButton = document.getElementById("printCalibrationButton");
   var printSettingsReportButton = document.getElementById("printSettingsReportButton");
+  var openQuickEditTopButton = document.getElementById("openQuickEditTopButton");
+  var openQuickEditPreviewButton = document.getElementById("openQuickEditPreviewButton");
   var includeRenderedZplInReport = document.getElementById("includeRenderedZplInReport");
   var pinPreviewToggle = document.getElementById("pinPreviewToggle");
   var showRenderDetailsToggle = document.getElementById("showRenderDetailsToggle");
@@ -1315,6 +1317,45 @@
     return data;
   }
 
+  function buildQuickEditHandoff() {
+    var payload = formPayload();
+    return {
+      template: templateSelect.value,
+      profileKey: profileSelect.value,
+      printerIp: payload.printerIp,
+      printerPort: payload.printerPort || payload.port,
+      sampleData: {
+        lotNumber: payload.lotNumber,
+        boxNumber: payload.boxNumber,
+        rfid: payload.rfid,
+        pounds: payload.pounds,
+        materialType: payload.materialType,
+        color: payload.color,
+        tolling: payload.tolling,
+        po: payload.po,
+        productDescription: payload.productDescription
+      },
+      profileOverrides: clonePlain(payload.profileOverrides || {})
+    };
+  }
+
+  function prepareQuickEditHandoff(event) {
+    var target = event.currentTarget;
+    try {
+      sessionStorage.setItem("templateQuickEditHandoff", JSON.stringify(buildQuickEditHandoff()));
+    } catch {
+      // Quick Edit can still load sane defaults without the handoff.
+    }
+    if (target && target.setAttribute) {
+      var query = new URLSearchParams({
+        handoff: "1",
+        template: templateSelect.value || "",
+        profileKey: profileSelect.value || ""
+      });
+      target.setAttribute("href", "/offline/template-quick-edit?" + query.toString());
+    }
+  }
+
   function exportProfileJson() {
     var payload = {
       profileKey: profileSelect.value,
@@ -2281,6 +2322,8 @@
   if (compareTemplateButton) compareTemplateButton.addEventListener("click", compareCurrentVsStaged);
   if (compareProductionTemplateButton) compareProductionTemplateButton.addEventListener("click", compareCurrentRenderVsProductionTemplate);
   if (applyFieldBoostsButton) applyFieldBoostsButton.addEventListener("click", applyGroupedFieldAdjustments);
+  if (openQuickEditTopButton) openQuickEditTopButton.addEventListener("click", prepareQuickEditHandoff);
+  if (openQuickEditPreviewButton) openQuickEditPreviewButton.addEventListener("click", prepareQuickEditHandoff);
   exportProfileButton.addEventListener("click", exportProfileJson);
   saveProfileButton.addEventListener("click", saveProfile);
   if (resetProfileButton) resetProfileButton.addEventListener("click", resetProfileDefaults);

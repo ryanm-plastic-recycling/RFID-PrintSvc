@@ -7952,6 +7952,11 @@ app.get("/offline/template-lab", (req, res) => {
   return res.sendFile(path.join(OFFLINE_PUBLIC_DIR, "template-lab.html"));
 });
 
+app.get("/offline/template-quick-edit", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  return res.sendFile(path.join(OFFLINE_PUBLIC_DIR, "template-quick-edit.html"));
+});
+
 app.use("/offline", express.static(OFFLINE_PUBLIC_DIR, {
   index: false,
   setHeaders(res) {
