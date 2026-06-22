@@ -774,14 +774,18 @@ button:focus,
 
 .template-lab-body {
   height: var(--template-lab-body-height);
-  min-height: 420px;
+  min-height: 0;
   position: relative;
 }
 
 .template-lab-controls-scroll {
   height: 100%;
+  min-height: 0;
   min-width: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 18px;
   padding-right: calc(var(--template-lab-preview-width) + 20px);
 }
 
@@ -789,7 +793,7 @@ button:focus,
   align-items: start;
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(760px, 1.55fr) minmax(320px, 0.45fr);
+  grid-template-columns: minmax(0, 1fr);
   padding-bottom: 24px;
 }
 
@@ -813,12 +817,14 @@ button:focus,
 }
 
 .template-lab-body.preview-pinned .template-lab-preview-rail {
+  max-height: calc(100vh - var(--template-lab-preview-top) - 14px);
+  overflow-x: hidden;
+  overflow-y: auto;
   position: fixed;
   right: max(16px, calc((100vw - 1760px) / 2 + 12px));
+  scrollbar-gutter: auto;
   top: var(--template-lab-preview-top);
   width: var(--template-lab-preview-width);
-  max-height: calc(100vh - var(--template-lab-preview-top) - 14px);
-  overflow: auto;
   z-index: 12;
 }
 
@@ -1043,6 +1049,16 @@ button:focus,
   margin: 10px 0;
 }
 
+.render-details-panel {
+  margin-top: 10px;
+}
+
+.compact-render-state-badge {
+  align-self: stretch;
+  justify-content: center;
+  min-height: 52px;
+}
+
 .snapshot-debug-grid {
   display: grid;
   gap: 8px;
@@ -1152,7 +1168,7 @@ button:focus,
   display: flex;
   justify-content: center;
   min-height: min(420px, 48vh);
-  overflow: auto;
+  overflow: hidden;
   padding: 18px;
 }
 
@@ -1167,9 +1183,10 @@ button:focus,
   border: 1px solid #d6deea;
   box-shadow: 0 10px 24px rgba(20, 35, 60, 0.16);
   display: block;
-  max-height: 760px;
-  max-width: 100%;
+  height: auto;
+  max-width: none;
   object-fit: contain;
+  width: 100%;
 }
 
 .zpl-preview-svg-host {
@@ -1177,15 +1194,16 @@ button:focus,
   border: 1px solid #d6deea;
   box-shadow: 0 10px 24px rgba(20, 35, 60, 0.16);
   display: block;
-  max-height: 760px;
-  max-width: 100%;
-  overflow: auto;
+  max-width: none;
+  overflow: visible;
+  width: 100%;
 }
 
 .zpl-preview-svg-host svg {
   display: block;
   height: auto;
-  max-width: 100%;
+  max-width: none;
+  width: 100%;
 }
 
 .preview-object {

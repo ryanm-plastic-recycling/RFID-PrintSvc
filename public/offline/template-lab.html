@@ -85,14 +85,24 @@
             <input id="pinPreviewToggle" type="checkbox" checked>
             Pin Preview
           </label>
+          <label class="checkbox-label proof-confirm-inline" title="Show render IDs, digests, and save/proof/promote audit timestamps.">
+            <input id="showRenderDetailsToggle" type="checkbox">
+            Show Render Details
+          </label>
+          <span id="compactRenderStateBadge" class="template-badge template-badge-warning compact-render-state-badge">
+            <em>Render</em>
+            <strong>not rendered</strong>
+          </span>
         </div>
-        <div class="snapshot-policy-row">
-          <span class="template-badge template-badge-enabled">Proof print uses last rendered ZPL</span>
-          <span class="template-badge template-badge-enabled">Promote writes last rendered dynamic template</span>
-          <span class="template-badge template-badge-enabled">Save Lab Profile saves profile settings only</span>
+        <div id="renderDetailsPanel" class="render-details-panel hidden" aria-live="polite">
+          <div class="snapshot-policy-row">
+            <span class="template-badge template-badge-enabled">Proof print uses last rendered ZPL</span>
+            <span class="template-badge template-badge-enabled">Promote writes last rendered dynamic template</span>
+            <span class="template-badge template-badge-enabled">Save Lab Profile saves profile settings only</span>
+          </div>
+          <div id="renderSnapshotDebug" class="snapshot-debug-grid"></div>
+          <div id="sendResult" class="muted-line"></div>
         </div>
-        <div id="renderSnapshotDebug" class="snapshot-debug-grid" aria-live="polite"></div>
-        <div id="sendResult" class="muted-line"></div>
       </section>
     </div>
 

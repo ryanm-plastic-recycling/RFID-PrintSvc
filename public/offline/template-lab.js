@@ -24,6 +24,9 @@
   var printSettingsReportButton = document.getElementById("printSettingsReportButton");
   var includeRenderedZplInReport = document.getElementById("includeRenderedZplInReport");
   var pinPreviewToggle = document.getElementById("pinPreviewToggle");
+  var showRenderDetailsToggle = document.getElementById("showRenderDetailsToggle");
+  var renderDetailsPanel = document.getElementById("renderDetailsPanel");
+  var compactRenderStateBadge = document.getElementById("compactRenderStateBadge");
   var templateLabBody = document.getElementById("templateLabBody");
   var templateLabWorkbench = document.getElementById("templateLabWorkbench");
   var templateLabControlsScroll = document.getElementById("templateLabControlsScroll");
@@ -416,6 +419,27 @@
       snapshotDebugValue("last promote", lastPromoteAt),
       snapshotDebugValue("last proof print", lastProofPrintAt)
     ].join("");
+  }
+
+  function setCompactRenderState(isCurrent) {
+    if (!compactRenderStateBadge) return;
+    compactRenderStateBadge.classList.toggle("template-badge-enabled", Boolean(isCurrent));
+    compactRenderStateBadge.classList.toggle("template-badge-warning", !isCurrent);
+    compactRenderStateBadge.innerHTML = [
+      "<em>Render</em>",
+      "<strong>" + (isCurrent ? "current" : "stale / not rendered") + "</strong>"
+    ].join("");
+  }
+
+  function renderDetailsShouldShow() {
+    return Boolean(showRenderDetailsToggle && showRenderDetailsToggle.checked) ||
+      activePreset === "debug" ||
+      activeAreaFilters.has("field-fit-debug");
+  }
+
+  function updateRenderDetailsVisibility() {
+    if (!renderDetailsPanel) return;
+    renderDetailsPanel.classList.toggle("hidden", !renderDetailsShouldShow());
   }
 
   function updateStickyPreviewOffset() {
@@ -1199,7 +1223,6 @@
     if (areas.includes("actions")) return true;
     if (collapseAllFilters) return false;
     if (activePreset === "all") return true;
-    if (activePreset === "custom" && areas.includes("field-fit-debug") && activeAreaFilters.has("field-fit")) return true;
     if (activeAreaFilters.size > 0 && areas.includes("preview")) return true;
     return areas.some(function (area) { return activeAreaFilters.has(area); });
   }
@@ -1233,6 +1256,7 @@
     var selectedItem = previewObjectById(selectedPreviewObjectId);
     var highlightedArea = selectedItem && selectedItem.area || Array.from(activeAreaFilters).map(areaKeyToPreviewArea).find(Boolean) || "";
     highlightPreviewArea(highlightedArea);
+    updateRenderDetailsVisibility();
   }
 
   function updateAvailableAreaFilters() {
@@ -1363,6 +1387,7 @@
     if (!renderStateLine) return;
     var current = currentRenderSignature();
     var isCurrent = rendered || (latestRenderSignature && current === latestRenderSignature);
+    setCompactRenderState(isCurrent);
     renderStateLine.textContent = isCurrent
       ? "Rendered with current controls"
       : "Unsaved changes: click Render / Re-render to update preview and metadata";
@@ -2177,6 +2202,7 @@
     });
     document.querySelectorAll(".template-lab-shell input, .template-lab-shell select").forEach(function (element) {
       if (element.id === "pinPreviewToggle") return;
+      if (element.id === "showRenderDetailsToggle") return;
       element.addEventListener("change", function () {
         exportProfileJson();
         updateCalibrationSummary();
@@ -2226,6 +2252,8 @@
   wireKeyboardNudges();
   setPreviewPinState();
   if (pinPreviewToggle) pinPreviewToggle.addEventListener("change", setPreviewPinState);
+  updateRenderDetailsVisibility();
+  if (showRenderDetailsToggle) showRenderDetailsToggle.addEventListener("change", updateRenderDetailsVisibility);
   window.addEventListener("resize", updateStickyPreviewOffset);
   window.addEventListener("scroll", updateStickyPreviewOffset, { passive: true });
   if (window.ResizeObserver) {
