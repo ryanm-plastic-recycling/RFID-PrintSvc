@@ -36,16 +36,63 @@
       <div class="status-warning">Template test sends bypass the production queue and require explicit confirmation.</div>
     </section>
 
+    <div class="template-lab-sticky-zone">
+      <section class="panel template-lab-filter-bar">
+        <div class="section-heading compact-heading">
+          <span class="section-step">Filter</span>
+          <h2>Area Filters</h2>
+          <span id="activeFilterCount" class="template-badge">Tuning Mode</span>
+        </div>
+        <div id="areaFilterPills" class="area-filter-pills" aria-label="Template Lab area filters"></div>
+        <div class="filter-help-line">
+          <span>Filters only change visible controls; they do not change label data, rendering, promotion, or proof printing.</span>
+          <span id="promotionCurrentControlsNotice" class="template-badge template-badge-enabled">Promote uses current rendered controls</span>
+        </div>
+      </section>
+
+      <section class="panel template-lab-action-bar" data-area-section="actions proof-print">
+        <div class="template-lab-action-header">
+          <div>
+            <h2>Primary Action Bar</h2>
+            <div id="sampleSummaryLine" class="muted-line">Sample: -</div>
+          </div>
+          <div class="actions compact-actions">
+            <button id="editSampleInputsButton" class="secondary" type="button">Edit Sample Inputs</button>
+            <label class="checkbox-label compact-checkbox" title="After a successful render, collapse Sample Inputs but keep their values.">
+              <input id="hideSampleInputsAfterRender" type="checkbox">
+              Hide Sample Inputs after render
+            </label>
+          </div>
+        </div>
+        <div class="actions template-lab-top-actions">
+          <button id="renderButton" type="button">Render / Re-render</button>
+          <button id="downloadButton" class="secondary" type="button" disabled>Download ZPL</button>
+          <button id="exportProfileButton" class="secondary" type="button">Export Profile JSON</button>
+          <button id="saveProfileButton" type="button">Save Lab Profile</button>
+          <button id="promoteTemplateButton" class="danger" type="button">Promote Dynamic Template to Production</button>
+          <label class="checkbox-label proof-confirm-inline">
+            <input id="confirmTestPrint" type="checkbox">
+            Confirm proof print
+          </label>
+          <button id="sendButton" type="button">Send Proof Print</button>
+          <button id="printCalibrationButton" class="secondary" type="button">Print Calibration Grid</button>
+        </div>
+        <div id="sendResult" class="muted-line"></div>
+      </section>
+    </div>
+
+    <div id="hiddenByFiltersMessage" class="panel hidden-by-filters-message area-filter-hidden">Only the action bar is visible. Use All, Tuning Mode, Preview + Actions, or an area pill to show controls.</div>
+
     <div class="template-lab-workbench">
       <div class="template-lab-left">
-        <section class="panel">
+        <section id="sampleInputsPanel" class="panel" data-area-section="sample-inputs">
           <div class="section-heading">
             <span class="section-step">A</span>
-            <h2>Live Preview Setup</h2>
+            <h2>Sample Inputs</h2>
           </div>
 
-          <details class="lab-accordion" open>
-            <summary>Sample Data</summary>
+          <details id="sampleInputsDetails" class="lab-accordion" open>
+            <summary>Template, sample values, and proof target</summary>
           <form id="templateForm" class="grid lab-form-grid">
             <label class="lab-span-2">
               Template
@@ -69,19 +116,19 @@
             </label>
             <label>
               Pounds
-              <input id="pounds" name="pounds" value="_" autocomplete="off">
+              <input id="pounds" name="pounds" value="1200" autocomplete="off">
             </label>
             <label>
               Material Type
-              <input id="materialType" name="materialType" value="POLYPROPYLENE" autocomplete="off">
+              <input id="materialType" name="materialType" value="PP" autocomplete="off">
             </label>
             <label>
               Color
-              <input id="color" name="color" value="ULTRAMARINEBLUE" autocomplete="off">
+              <input id="color" name="color" value="Black" autocomplete="off">
             </label>
             <label>
               Tolling
-              <input id="tolling" name="tolling" value="" autocomplete="off">
+              <input id="tolling" name="tolling" value="Tolling" autocomplete="off">
             </label>
             <label>
               PO
@@ -103,22 +150,20 @@
             <div id="calibrationSummary" class="muted-line lab-span-3">Calibration: -</div>
             <div id="templateSourceLine" class="muted-line lab-span-3">Editing current production template: -</div>
             <div id="templateGeometryWarnings" class="muted-line lab-span-3"></div>
+            <div class="actions compact-actions lab-span-3">
+              <button id="resetSampleDataButton" class="secondary" type="button">Reset Sample Data</button>
+            </div>
           </form>
           </details>
-
-          <div class="actions sticky-actions">
-            <button id="renderButton" type="button">Render / Re-render</button>
-            <button id="downloadButton" class="secondary" type="button" disabled>Download ZPL</button>
-          </div>
         </section>
 
-        <section class="panel">
+        <section class="panel tuning-workspace" data-area-section="whole-label qr logo lot-number box-number material-type color product-description po pounds tolling bottom-grid field-fit">
           <div class="section-heading">
             <span class="section-step">B</span>
             <h2>Visual Tuning</h2>
           </div>
 
-          <details class="tuning-card lab-accordion" open>
+          <details class="tuning-card lab-accordion" data-area-section="whole-label" open>
             <summary>Whole Label Calibration</summary>
             <p class="field-help">All offsets are printer dots. Whole-label scale and offset move text, boxes, lines, QR, barcode origins, and logo graphics together for Template Lab proofing; they affect production only after explicit promotion.</p>
             <div class="grid lab-tuning-grid">
@@ -140,7 +185,7 @@
             </div>
           </details>
 
-          <details class="tuning-card lab-accordion" open>
+          <details class="tuning-card lab-accordion" data-area-section="qr" open>
             <summary>QR</summary>
             <p class="field-help">QR data always remains the lot number only. X/Y tune the native ^BQN origin; magnification controls printed module size.</p>
             <div class="grid lab-tuning-grid">
@@ -150,7 +195,7 @@
             </div>
           </details>
 
-          <details class="tuning-card lab-accordion" open>
+          <details class="tuning-card lab-accordion" data-area-section="logo" open>
             <summary>Logo</summary>
             <p class="field-help">Logo controls apply to the static ^GFA logo where enabled. Upload a higher quality PNG to generate a printer-safe ^GFA asset under the controlled ZPL assets folder.</p>
             <div class="grid lab-tuning-grid">
@@ -171,7 +216,7 @@
             <div id="logoAssetResult" class="muted-line"></div>
           </details>
 
-          <details class="tuning-subsection lab-accordion" open>
+          <details class="tuning-subsection lab-accordion" data-area-section="field-fit lot-number box-number material-type color product-description po pounds tolling" open>
             <summary>Current Template Field Geometry</summary>
             <p class="field-help">These controls are parsed from the selected production `.template.zpl` file. Boosts multiply the parsed font sizes; X/Y offsets add printer dots to parsed positions.</p>
             <div class="grid lab-tuning-grid">
@@ -189,51 +234,46 @@
             <div id="fieldFitControls" class="field-fit-controls"></div>
           </details>
 
-          <details class="tuning-subsection lab-accordion">
+          <details class="tuning-subsection lab-accordion" data-area-section="bottom-grid" open>
+            <summary>Bottom Grid / Footer Row</summary>
+            <p class="field-help">Bottom Grid/Footer Row controls the full-width row near the bottom of the label. Color Field Border, Tolling Field Border, and Material Type Field Border controls only tune their own field boxes.</p>
+            <div class="grid lab-tuning-grid">
+              <label title="Bottom grid origin X in printer dots.">Bottom Grid X<input id="bottomGridX" type="number" step="1"></label>
+              <label title="Bottom grid origin Y in printer dots.">Bottom Grid Y<input id="bottomGridY" type="number" step="1"></label>
+              <label title="Bottom grid total width in printer dots.">Bottom Grid Width<input id="bottomGridWidth" type="number" min="1" step="1"></label>
+              <label title="Bottom grid total height in printer dots.">Bottom Grid Height<input id="bottomGridHeight" type="number" min="1" step="1"></label>
+              <label title="Outer footer-row border thickness in printer dots. Use 0 to suppress.">Bottom Grid Border Thickness<input id="bottomGridBorderThickness" type="number" min="0" max="20" step="1"></label>
+              <label title="Number of equal footer columns. Default is 5 when no source grid is detected.">Bottom Grid Column Count<input id="bottomGridColumnCount" type="number" min="1" max="24" step="1" value="5"></label>
+              <label title="Internal column separator line thickness in printer dots. Use 0 to suppress.">Bottom Grid Column Line Thickness<input id="bottomGridColumnLineThickness" type="number" min="0" max="20" step="1"></label>
+            </div>
+          </details>
+
+          <details class="tuning-subsection lab-accordion" data-area-section="field-fit">
             <summary>Advanced Auto-Fit Metadata</summary>
             <p class="field-help">Auto-fit metadata remains supported for dynamic fitted fields. It is saved with the staged geometry and promoted as token-preserving template metadata when helper tokens are present.</p>
           </details>
 
-          <details class="tuning-subsection lab-accordion" open>
-            <summary>Test Print / Export</summary>
+          <details class="tuning-subsection lab-accordion" data-area-section="export-save" open>
+            <summary>Export / Save Details</summary>
             <p class="field-help">Export updates the JSON below. Save writes lab-only profile overrides to the configured Template Lab profile JSON. Saved lab profiles affect preview/test rendering only.</p>
             <textarea id="profileJson" class="profile-json" spellcheck="false"></textarea>
             <div id="profileSaveResult" class="muted-line"></div>
             <div class="actions">
-              <button id="loadProfileButton" class="secondary" type="button">Load Profile Values</button>
+              <button id="loadProfileButton" class="secondary" type="button">Load Saved Profile</button>
               <button id="reloadTemplateButton" class="secondary" type="button">Reload From Current Template</button>
               <button id="compareTemplateButton" class="secondary" type="button">Compare Current vs Staged</button>
-              <button id="exportProfileButton" class="secondary" type="button">Export Profile JSON</button>
               <button id="copyProfileButton" class="secondary" type="button">Copy JSON</button>
               <button id="downloadProfileButton" class="secondary" type="button">Download JSON</button>
-              <button id="saveProfileButton" type="button">Save Lab Profile</button>
               <button id="resetProfileButton" class="secondary" type="button">Reset station profile to template defaults</button>
-              <button id="promoteTemplateButton" class="danger" type="button">Promote Dynamic Template to Production</button>
             </div>
             <div id="promoteTemplateResult" class="muted-line"></div>
             <div id="templateCompareResult" class="muted-line"></div>
           </details>
         </section>
-
-        <section class="panel actions-panel">
-          <div class="section-heading">
-            <span class="section-step">C</span>
-            <h2>Proof/Test Send</h2>
-          </div>
-          <label class="checkbox-label">
-            <input id="confirmTestPrint" type="checkbox">
-            I understand this sends rendered ZPL directly to the selected printer and bypasses the production queue.
-          </label>
-          <div id="sendResult" class="muted-line"></div>
-          <div class="actions">
-            <button id="sendButton" type="button">Send Proof Print</button>
-            <button id="printCalibrationButton" class="secondary" type="button">Print calibration grid</button>
-          </div>
-        </section>
       </div>
 
       <div class="template-lab-right">
-        <section class="panel">
+        <section class="panel preview-panel" data-area-section="preview">
           <div class="section-heading">
             <span class="section-step">D</span>
             <h2>Preview</h2>
@@ -248,7 +288,7 @@
           <div id="previewStatus" class="muted-line"></div>
         </section>
 
-        <section class="panel">
+        <section class="panel" data-area-section="metadata">
           <div class="section-heading">
             <span class="section-step">E</span>
             <h2>Render Metadata</h2>
@@ -256,7 +296,7 @@
           <div id="metadataGrid" class="health-summary-grid"></div>
         </section>
 
-        <section class="panel">
+        <section class="panel" data-area-section="field-fit-debug">
           <div class="section-heading">
             <span class="section-step">F</span>
             <h2>Field-Fit Debug</h2>
@@ -264,7 +304,7 @@
           <div id="fitDebug" class="fit-debug"></div>
         </section>
 
-        <details class="panel zpl-code-panel">
+        <details class="panel zpl-code-panel" data-area-section="rendered-zpl">
           <summary>
             <span>Rendered ZPL</span>
             <span id="codeSizeBadge" class="template-badge">not rendered</span>
