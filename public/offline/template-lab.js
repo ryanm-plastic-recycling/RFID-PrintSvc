@@ -24,7 +24,9 @@
   var printSettingsReportButton = document.getElementById("printSettingsReportButton");
   var includeRenderedZplInReport = document.getElementById("includeRenderedZplInReport");
   var pinPreviewToggle = document.getElementById("pinPreviewToggle");
+  var templateLabBody = document.getElementById("templateLabBody");
   var templateLabWorkbench = document.getElementById("templateLabWorkbench");
+  var templateLabControlsScroll = document.getElementById("templateLabControlsScroll");
   var stickyPreviewRail = document.getElementById("stickyPreviewRail");
   var stickyPreviewBadge = document.getElementById("stickyPreviewBadge");
   var resetSampleDataButton = document.getElementById("resetSampleDataButton");
@@ -418,15 +420,20 @@
 
   function updateStickyPreviewOffset() {
     var shell = document.querySelector(".template-lab-shell");
-    var stickyZone = document.querySelector(".template-lab-sticky-zone");
+    var stickyZone = document.getElementById("templateLabTopbar") || document.querySelector(".template-lab-sticky-zone");
     if (!shell || !stickyZone) return;
     var bottom = stickyZone.getBoundingClientRect().bottom;
     var top = Math.max(112, Math.round(bottom + 14));
     shell.style.setProperty("--template-lab-preview-top", top + "px");
+    shell.style.setProperty("--template-lab-body-height", "calc(100vh - " + top + "px - 14px)");
   }
 
   function setPreviewPinState() {
     var pinned = !pinPreviewToggle || pinPreviewToggle.checked;
+    if (templateLabBody) {
+      templateLabBody.classList.toggle("preview-pinned", pinned);
+      templateLabBody.classList.toggle("preview-unpinned", !pinned);
+    }
     if (templateLabWorkbench) {
       templateLabWorkbench.classList.toggle("preview-pinned", pinned);
       templateLabWorkbench.classList.toggle("preview-unpinned", !pinned);
@@ -2223,7 +2230,7 @@
   window.addEventListener("scroll", updateStickyPreviewOffset, { passive: true });
   if (window.ResizeObserver) {
     var stickyResizeObserver = new ResizeObserver(updateStickyPreviewOffset);
-    var stickyZone = document.querySelector(".template-lab-sticky-zone");
+    var stickyZone = document.getElementById("templateLabTopbar") || document.querySelector(".template-lab-sticky-zone");
     if (stickyZone) stickyResizeObserver.observe(stickyZone);
   }
   templateSelect.addEventListener("change", function () {

@@ -36,7 +36,7 @@
       <div class="status-warning">Template test sends bypass the production queue and require explicit confirmation.</div>
     </section>
 
-    <div class="template-lab-sticky-zone">
+    <div id="templateLabTopbar" class="template-lab-sticky-zone template-lab-topbar">
       <section class="panel template-lab-filter-bar">
         <div class="section-heading compact-heading">
           <span class="section-step">Filter</span>
@@ -96,10 +96,12 @@
       </section>
     </div>
 
-    <div id="hiddenByFiltersMessage" class="panel hidden-by-filters-message area-filter-hidden">Only the action bar is visible. Use All, Tuning Mode, Preview + Actions, or an area pill to show controls.</div>
+    <div id="templateLabBody" class="template-lab-body preview-pinned">
+      <div id="templateLabControlsScroll" class="template-lab-controls-scroll">
+        <div id="hiddenByFiltersMessage" class="panel hidden-by-filters-message area-filter-hidden">Only the action bar is visible. Use All, Tuning Mode, Preview + Actions, or an area pill to show controls.</div>
 
-    <div id="templateLabWorkbench" class="template-lab-workbench preview-pinned">
-      <div class="template-lab-left">
+        <div id="templateLabWorkbench" class="template-lab-workbench">
+          <div class="template-lab-left">
         <section id="sampleInputsPanel" class="panel" data-area-section="sample-inputs">
           <div class="section-heading">
             <span class="section-step">A</span>
@@ -294,8 +296,35 @@
         </section>
       </div>
 
-      <div class="template-lab-right">
-        <div id="stickyPreviewRail" class="template-lab-preview-rail" data-area-section="preview">
+          <div class="template-lab-diagnostics">
+            <section class="panel" data-area-section="metadata">
+              <div class="section-heading">
+                <span class="section-step">E</span>
+                <h2>Render Metadata</h2>
+              </div>
+              <div id="metadataGrid" class="health-summary-grid"></div>
+            </section>
+
+            <section class="panel" data-area-section="field-fit-debug">
+              <div class="section-heading">
+                <span class="section-step">F</span>
+                <h2>Field-Fit Debug</h2>
+              </div>
+              <div id="fitDebug" class="fit-debug"></div>
+            </section>
+
+            <details class="panel zpl-code-panel" data-area-section="rendered-zpl">
+              <summary>
+                <span>Rendered ZPL</span>
+                <span id="codeSizeBadge" class="template-badge">not rendered</span>
+              </summary>
+              <pre id="renderedZpl">Render a template to see the generated ZPL.</pre>
+            </details>
+          </div>
+        </div>
+      </div>
+
+      <div id="stickyPreviewRail" class="template-lab-preview-rail" data-area-section="preview">
         <section class="panel preview-panel">
           <div class="section-heading">
             <span class="section-step">D</span>
@@ -314,31 +343,6 @@
           <div id="selectedPreviewObjectPanel" class="selected-field-panel">Selected object: -</div>
           <div id="quickEditPanel" class="quick-edit-panel hidden"></div>
         </section>
-        </div>
-
-        <section class="panel" data-area-section="metadata">
-          <div class="section-heading">
-            <span class="section-step">E</span>
-            <h2>Render Metadata</h2>
-          </div>
-          <div id="metadataGrid" class="health-summary-grid"></div>
-        </section>
-
-        <section class="panel" data-area-section="field-fit-debug">
-          <div class="section-heading">
-            <span class="section-step">F</span>
-            <h2>Field-Fit Debug</h2>
-          </div>
-          <div id="fitDebug" class="fit-debug"></div>
-        </section>
-
-        <details class="panel zpl-code-panel" data-area-section="rendered-zpl">
-          <summary>
-            <span>Rendered ZPL</span>
-            <span id="codeSizeBadge" class="template-badge">not rendered</span>
-          </summary>
-          <pre id="renderedZpl">Render a template to see the generated ZPL.</pre>
-        </details>
       </div>
     </div>
 

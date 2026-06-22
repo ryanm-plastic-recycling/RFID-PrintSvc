@@ -681,22 +681,25 @@ button:focus,
 }
 
 .template-lab-shell {
+  --template-lab-body-height: calc(100vh - 260px);
+  --template-lab-preview-width: clamp(360px, 27vw, 500px);
   --template-lab-sticky-top: 14px;
   --template-lab-preview-top: 226px;
+  min-height: 100vh;
   width: min(1760px, calc(100% - 24px));
 }
 
-.template-lab-sticky-zone {
+.template-lab-topbar {
   align-items: start;
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(380px, 0.9fr) minmax(720px, 1.1fr);
+  grid-template-columns: minmax(360px, 0.85fr) minmax(760px, 1.15fr);
   position: sticky;
   top: var(--template-lab-sticky-top);
-  z-index: 8;
+  z-index: 20;
 }
 
-.template-lab-sticky-zone .panel {
+.template-lab-topbar .panel {
   margin-bottom: 12px;
 }
 
@@ -769,15 +772,29 @@ button:focus,
   margin-bottom: 4px;
 }
 
+.template-lab-body {
+  height: var(--template-lab-body-height);
+  min-height: 420px;
+  position: relative;
+}
+
+.template-lab-controls-scroll {
+  height: 100%;
+  min-width: 0;
+  overflow: auto;
+  padding-right: calc(var(--template-lab-preview-width) + 20px);
+}
+
 .template-lab-workbench {
   align-items: start;
   display: grid;
   gap: 16px;
-  grid-template-columns: minmax(720px, 1.35fr) minmax(500px, 0.65fr);
+  grid-template-columns: minmax(760px, 1.55fr) minmax(320px, 0.45fr);
+  padding-bottom: 24px;
 }
 
 .template-lab-left,
-.template-lab-right {
+.template-lab-diagnostics {
   display: grid;
   gap: 16px;
   min-width: 0;
@@ -787,7 +804,7 @@ button:focus,
   align-content: start;
 }
 
-.template-lab-right {
+.template-lab-diagnostics {
   align-content: start;
 }
 
@@ -795,23 +812,37 @@ button:focus,
   min-width: 0;
 }
 
-.template-lab-workbench.preview-pinned .template-lab-preview-rail {
-  align-self: start;
+.template-lab-body.preview-pinned .template-lab-preview-rail {
+  position: fixed;
+  right: max(16px, calc((100vw - 1760px) / 2 + 12px));
+  top: var(--template-lab-preview-top);
+  width: var(--template-lab-preview-width);
   max-height: calc(100vh - var(--template-lab-preview-top) - 14px);
   overflow: auto;
-  position: sticky;
-  top: var(--template-lab-preview-top);
-  z-index: 5;
+  z-index: 12;
 }
 
-.template-lab-workbench.preview-pinned .preview-panel {
+.template-lab-body.preview-pinned .preview-panel {
   margin-bottom: 0;
 }
 
-.template-lab-workbench.preview-unpinned .template-lab-preview-rail {
+.template-lab-body.preview-unpinned {
+  height: auto;
+  min-height: 0;
+}
+
+.template-lab-body.preview-unpinned .template-lab-controls-scroll {
+  height: auto;
+  overflow: visible;
+  padding-right: 0;
+}
+
+.template-lab-body.preview-unpinned .template-lab-preview-rail {
+  margin-top: 16px;
   max-height: none;
   overflow: visible;
   position: static;
+  width: auto;
 }
 
 .lab-form-grid {
@@ -1302,20 +1333,37 @@ pre {
     grid-template-columns: 1fr;
   }
 
-  .template-lab-right {
-    order: -1;
-  }
-
-  .template-lab-sticky-zone {
+  .template-lab-topbar {
     grid-template-columns: 1fr;
     position: static;
   }
 
-  .template-lab-workbench.preview-pinned .template-lab-preview-rail,
-  .template-lab-workbench.preview-unpinned .template-lab-preview-rail {
+  .template-lab-body,
+  .template-lab-body.preview-pinned,
+  .template-lab-body.preview-unpinned {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
+  }
+
+  .template-lab-controls-scroll,
+  .template-lab-body.preview-pinned .template-lab-controls-scroll,
+  .template-lab-body.preview-unpinned .template-lab-controls-scroll {
+    height: auto;
+    overflow: visible;
+    padding-right: 0;
+  }
+
+  .template-lab-preview-rail,
+  .template-lab-body.preview-pinned .template-lab-preview-rail,
+  .template-lab-body.preview-unpinned .template-lab-preview-rail {
+    margin-bottom: 16px;
     max-height: none;
+    order: -1;
     overflow: visible;
     position: static;
+    width: auto;
   }
 
   .label-details-layout {
@@ -1423,6 +1471,8 @@ pre {
     display: none !important;
   }
 
+  .template-lab-body,
+  .template-lab-controls-scroll,
   .template-lab-workbench,
   .template-lab-preview-rail,
   .preview-panel {
