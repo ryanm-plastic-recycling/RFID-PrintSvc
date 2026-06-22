@@ -23,6 +23,10 @@
   var printCalibrationButton = document.getElementById("printCalibrationButton");
   var printSettingsReportButton = document.getElementById("printSettingsReportButton");
   var includeRenderedZplInReport = document.getElementById("includeRenderedZplInReport");
+  var pinPreviewToggle = document.getElementById("pinPreviewToggle");
+  var templateLabWorkbench = document.getElementById("templateLabWorkbench");
+  var stickyPreviewRail = document.getElementById("stickyPreviewRail");
+  var stickyPreviewBadge = document.getElementById("stickyPreviewBadge");
   var resetSampleDataButton = document.getElementById("resetSampleDataButton");
   var copyProfileButton = document.getElementById("copyProfileButton");
   var downloadProfileButton = document.getElementById("downloadProfileButton");
@@ -410,6 +414,30 @@
       snapshotDebugValue("last promote", lastPromoteAt),
       snapshotDebugValue("last proof print", lastProofPrintAt)
     ].join("");
+  }
+
+  function updateStickyPreviewOffset() {
+    var shell = document.querySelector(".template-lab-shell");
+    var stickyZone = document.querySelector(".template-lab-sticky-zone");
+    if (!shell || !stickyZone) return;
+    var bottom = stickyZone.getBoundingClientRect().bottom;
+    var top = Math.max(112, Math.round(bottom + 14));
+    shell.style.setProperty("--template-lab-preview-top", top + "px");
+  }
+
+  function setPreviewPinState() {
+    var pinned = !pinPreviewToggle || pinPreviewToggle.checked;
+    if (templateLabWorkbench) {
+      templateLabWorkbench.classList.toggle("preview-pinned", pinned);
+      templateLabWorkbench.classList.toggle("preview-unpinned", !pinned);
+    }
+    if (stickyPreviewRail) stickyPreviewRail.setAttribute("aria-label", pinned ? "Sticky Preview workspace" : "Preview workspace");
+    if (stickyPreviewBadge) {
+      stickyPreviewBadge.textContent = pinned ? "Sticky Preview" : "Preview Unpinned";
+      stickyPreviewBadge.classList.toggle("template-badge-enabled", pinned);
+      stickyPreviewBadge.classList.toggle("template-badge-neutral", !pinned);
+    }
+    updateStickyPreviewOffset();
   }
 
   function areaKeyFromPreviewArea(area) {
@@ -2141,6 +2169,7 @@
       syncRangePair(pair[0], pair[1]);
     });
     document.querySelectorAll(".template-lab-shell input, .template-lab-shell select").forEach(function (element) {
+      if (element.id === "pinPreviewToggle") return;
       element.addEventListener("change", function () {
         exportProfileJson();
         updateCalibrationSummary();
@@ -2188,6 +2217,15 @@
   wireProfileExportOnInput();
   wireQuickEditPanel();
   wireKeyboardNudges();
+  setPreviewPinState();
+  if (pinPreviewToggle) pinPreviewToggle.addEventListener("change", setPreviewPinState);
+  window.addEventListener("resize", updateStickyPreviewOffset);
+  window.addEventListener("scroll", updateStickyPreviewOffset, { passive: true });
+  if (window.ResizeObserver) {
+    var stickyResizeObserver = new ResizeObserver(updateStickyPreviewOffset);
+    var stickyZone = document.querySelector(".template-lab-sticky-zone");
+    if (stickyZone) stickyResizeObserver.observe(stickyZone);
+  }
   templateSelect.addEventListener("change", function () {
     applyTemplateDefaults().then(function () {
       updateRenderState(false);

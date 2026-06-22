@@ -81,6 +81,10 @@
             <input id="includeRenderedZplInReport" type="checkbox">
             Include rendered ZPL in print report
           </label>
+          <label class="checkbox-label proof-confirm-inline" title="Keep the preview canvas pinned in the top-right workspace while tuning controls scroll.">
+            <input id="pinPreviewToggle" type="checkbox" checked>
+            Pin Preview
+          </label>
         </div>
         <div class="snapshot-policy-row">
           <span class="template-badge template-badge-enabled">Proof print uses last rendered ZPL</span>
@@ -94,7 +98,7 @@
 
     <div id="hiddenByFiltersMessage" class="panel hidden-by-filters-message area-filter-hidden">Only the action bar is visible. Use All, Tuning Mode, Preview + Actions, or an area pill to show controls.</div>
 
-    <div class="template-lab-workbench">
+    <div id="templateLabWorkbench" class="template-lab-workbench preview-pinned">
       <div class="template-lab-left">
         <section id="sampleInputsPanel" class="panel" data-area-section="sample-inputs">
           <div class="section-heading">
@@ -291,10 +295,12 @@
       </div>
 
       <div class="template-lab-right">
-        <section class="panel preview-panel" data-area-section="preview">
+        <div id="stickyPreviewRail" class="template-lab-preview-rail" data-area-section="preview">
+        <section class="panel preview-panel">
           <div class="section-heading">
             <span class="section-step">D</span>
             <h2>Preview</h2>
+            <span id="stickyPreviewBadge" class="template-badge template-badge-enabled">Sticky Preview</span>
           </div>
           <div id="metadataBadges" class="template-badge-row"></div>
           <div id="renderStateLine" class="render-state render-state-stale">Not rendered yet</div>
@@ -308,6 +314,7 @@
           <div id="selectedPreviewObjectPanel" class="selected-field-panel">Selected object: -</div>
           <div id="quickEditPanel" class="quick-edit-panel hidden"></div>
         </section>
+        </div>
 
         <section class="panel" data-area-section="metadata">
           <div class="section-heading">

@@ -681,6 +681,8 @@ button:focus,
 }
 
 .template-lab-shell {
+  --template-lab-sticky-top: 14px;
+  --template-lab-preview-top: 226px;
   width: min(1760px, calc(100% - 24px));
 }
 
@@ -690,7 +692,7 @@ button:focus,
   gap: 12px;
   grid-template-columns: minmax(380px, 0.9fr) minmax(720px, 1.1fr);
   position: sticky;
-  top: 0;
+  top: var(--template-lab-sticky-top);
   z-index: 8;
 }
 
@@ -778,11 +780,38 @@ button:focus,
 .template-lab-right {
   display: grid;
   gap: 16px;
+  min-width: 0;
+}
+
+.template-lab-left {
+  align-content: start;
 }
 
 .template-lab-right {
+  align-content: start;
+}
+
+.template-lab-preview-rail {
+  min-width: 0;
+}
+
+.template-lab-workbench.preview-pinned .template-lab-preview-rail {
+  align-self: start;
+  max-height: calc(100vh - var(--template-lab-preview-top) - 14px);
+  overflow: auto;
   position: sticky;
-  top: 210px;
+  top: var(--template-lab-preview-top);
+  z-index: 5;
+}
+
+.template-lab-workbench.preview-pinned .preview-panel {
+  margin-bottom: 0;
+}
+
+.template-lab-workbench.preview-unpinned .template-lab-preview-rail {
+  max-height: none;
+  overflow: visible;
+  position: static;
 }
 
 .lab-form-grid {
@@ -1050,6 +1079,12 @@ button:focus,
   color: var(--enabled);
 }
 
+.template-badge-neutral {
+  background: #eef3fb;
+  border-color: #cbd5e4;
+  color: var(--muted);
+}
+
 .template-badge-warning {
   background: var(--warning-bg);
   border-color: var(--warning-line);
@@ -1085,7 +1120,7 @@ button:focus,
   border-radius: 8px;
   display: flex;
   justify-content: center;
-  min-height: 420px;
+  min-height: min(420px, 48vh);
   overflow: auto;
   padding: 18px;
 }
@@ -1267,12 +1302,19 @@ pre {
     grid-template-columns: 1fr;
   }
 
+  .template-lab-right {
+    order: -1;
+  }
+
   .template-lab-sticky-zone {
     grid-template-columns: 1fr;
     position: static;
   }
 
-  .template-lab-right {
+  .template-lab-workbench.preview-pinned .template-lab-preview-rail,
+  .template-lab-workbench.preview-unpinned .template-lab-preview-rail {
+    max-height: none;
+    overflow: visible;
     position: static;
   }
 
@@ -1379,6 +1421,13 @@ pre {
 
   .template-lab-shell > :not(.template-lab-print-report) {
     display: none !important;
+  }
+
+  .template-lab-workbench,
+  .template-lab-preview-rail,
+  .preview-panel {
+    display: none !important;
+    position: static !important;
   }
 
   .template-lab-print-report {
