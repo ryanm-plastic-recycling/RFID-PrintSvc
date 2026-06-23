@@ -61,6 +61,9 @@
             Confirm proof print
           </label>
           <button id="qeSendProofButton" type="button">Send Proof Print</button>
+          <button id="qeSaveBrowserDraftButton" class="secondary" type="button" title="Save current Quick Edit controls to this browser only.">Save Browser Draft</button>
+          <button id="qeClearBrowserDraftButton" class="secondary" type="button" title="Discard this browser draft and reload production source values.">Clear Browser Draft</button>
+          <button id="qeReloadProductionButton" class="secondary" type="button">Reload From Production Template</button>
           <button id="qeSaveProfileButton" type="button">Save Lab Profile</button>
           <button id="qeExportProfileButton" class="secondary" type="button">Export Profile JSON</button>
           <button id="qePrintReportButton" class="secondary" type="button">Print Quick Edit Settings</button>
@@ -74,6 +77,8 @@
         <span id="qePreviewModeBadge" class="template-badge">Preview: -</span>
         <span id="qeRenderStateBadge" class="template-badge template-badge-warning">Stale: render needed</span>
         <span id="qeLastRenderBadge" class="template-badge">Last render: -</span>
+        <span id="qeSourceStatusBadge" class="template-badge template-badge-neutral">Source: loading</span>
+        <span id="qeBrowserDraftBadge" class="template-badge template-badge-neutral">Browser draft: none</span>
       </div>
     </section>
 

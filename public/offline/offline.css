@@ -681,7 +681,6 @@ button:focus,
 }
 
 .template-lab-shell {
-  --template-lab-body-height: calc(100vh - 260px);
   --template-lab-preview-width: clamp(360px, 27vw, 500px);
   --template-lab-sticky-top: 14px;
   --template-lab-preview-top: 226px;
@@ -773,18 +772,17 @@ button:focus,
 }
 
 .template-lab-body {
-  height: var(--template-lab-body-height);
+  height: auto;
   min-height: 0;
   position: relative;
 }
 
 .template-lab-controls-scroll {
-  height: 100%;
+  height: auto;
   min-height: 0;
   min-width: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow: visible;
+  overscroll-behavior: auto;
   padding-bottom: 18px;
   padding-right: calc(var(--template-lab-preview-width) + 20px);
 }
@@ -1047,6 +1045,10 @@ button:focus,
   flex-wrap: wrap;
   gap: 8px;
   margin: 10px 0;
+}
+
+.lab-source-row {
+  margin: 10px 0 0;
 }
 
 .render-details-panel {

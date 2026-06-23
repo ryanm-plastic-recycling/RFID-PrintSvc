@@ -1,9 +1,12 @@
 (function () {
+  var BROWSER_DRAFT_KEY_PREFIX = "priTemplateLabDraft";
+  var LAST_CONTEXT_KEY = "priTemplateLabLastContext";
   var catalog = { templates: [], profiles: [] };
   var latestPreview = null;
   var latestRenderedPayload = null;
   var latestRenderSignature = "";
   var currentRenderSnapshot = null;
+  var currentSourcePayload = null;
   var selectedPreviewObjectId = "";
   var lastSaveProfileAt = "";
   var lastPromoteAt = "";
@@ -18,6 +21,8 @@
   var compareProductionTemplateButton = document.getElementById("compareProductionTemplateButton");
   var exportProfileButton = document.getElementById("exportProfileButton");
   var saveProfileButton = document.getElementById("saveProfileButton");
+  var saveBrowserDraftButton = document.getElementById("saveBrowserDraftButton");
+  var clearBrowserDraftButton = document.getElementById("clearBrowserDraftButton");
   var resetProfileButton = document.getElementById("resetProfileButton");
   var promoteTemplateButton = document.getElementById("promoteTemplateButton");
   var printCalibrationButton = document.getElementById("printCalibrationButton");
@@ -63,6 +68,9 @@
   var lastRenderedAt = document.getElementById("lastRenderedAt");
   var renderSnapshotDebug = document.getElementById("renderSnapshotDebug");
   var sendResult = document.getElementById("sendResult");
+  var sourceStatusBadge = document.getElementById("sourceStatusBadge");
+  var browserDraftBadge = document.getElementById("browserDraftBadge");
+  var browserDraftStatusLine = document.getElementById("browserDraftStatusLine");
   var fieldFitControls = document.getElementById("fieldFitControls");
   var profileJson = document.getElementById("profileJson");
   var profileSaveResult = document.getElementById("profileSaveResult");
@@ -894,6 +902,7 @@
       exportProfileJson();
       updateRenderState(false);
       profileSaveResult.textContent = "Loaded saved profile overrides for " + profileSelect.value + " from " + (catalog.profileConfigPath || "configured profile JSON") + ". Render/Re-render to use them.";
+      setSourceStatusBadge("saved_lab_profile");
       setStatus(true, "Saved Profile Loaded", "Saved profile values are now in the browser controls; production remains unchanged.");
     } catch (error) {
       profileSaveResult.textContent = error.message;
@@ -903,10 +912,10 @@
 
   async function loadSelectedProfileValues() {
     try {
-      var geometry = await loadTemplateGeometryFromServer();
-      applyGeometryToControls(geometry);
+      await loadTemplateSourceFromServer({ allowDraft: true });
     } catch (error) {
-      setStatus(false, "Template Geometry Failed", error.message);
+      setSourceStatusBadge("built_in_default");
+      setStatus(false, "Template Source Failed", error.message);
     }
   }
 
@@ -1317,6 +1326,184 @@
     return data;
   }
 
+  function browserDraftKey(templateName, profileKey) {
+    return BROWSER_DRAFT_KEY_PREFIX + ":" + encodeURIComponent(templateName || "") + ":" + encodeURIComponent(profileKey || "");
+  }
+
+  function currentDraftKey() {
+    return browserDraftKey(templateSelect.value || "", profileSelect.value || "");
+  }
+
+  function currentSampleData() {
+    return {
+      lotNumber: input("lotNumber")?.value || "",
+      boxNumber: input("boxNumber")?.value || "",
+      rfid: input("rfid")?.value || "",
+      pounds: input("pounds")?.value || "",
+      materialType: input("materialType")?.value || "",
+      color: input("color")?.value || "",
+      tolling: input("tolling")?.value || "",
+      po: input("po")?.value || "",
+      productDescription: input("productDescription")?.value || ""
+    };
+  }
+
+  function applySampleDataToControls(sampleData) {
+    var sample = sampleData || {};
+    Object.keys(sampleDefaults).forEach(function (key) {
+      if (sample[key] !== undefined) setInputValue(key, sample[key]);
+    });
+    updateSampleSummary();
+  }
+
+  function browserDraftPayload() {
+    var payload = formPayload();
+    return {
+      templateName: templateSelect.value || "",
+      template: templateSelect.value || "",
+      profileKey: profileSelect.value || "",
+      sampleData: currentSampleData(),
+      profileOverrides: clonePlain(payload.profileOverrides || {}),
+      selectedObjectId: selectedPreviewObjectId || "",
+      selectedArea: previewObjectById(selectedPreviewObjectId)?.area || "",
+      activeAreaFilters: Array.from(activeAreaFilters || []),
+      timestamp: new Date().toISOString(),
+      dirty: true,
+      stale: currentRenderSignature() !== latestRenderSignature
+    };
+  }
+
+  function setSourceStatusBadge(status, detail) {
+    if (!sourceStatusBadge) return;
+    var labels = {
+      production_with_sidecar: "Source: Production Template + Sidecar Profile",
+      production_parsed: "Source: Parsed Production Template",
+      missing_sidecar: "Source: Parsed Production Template",
+      built_in_default: "Source: Built-in Defaults",
+      saved_lab_profile: "Source: Saved Lab Profile",
+      browser_draft: "Source: Browser Draft"
+    };
+    sourceStatusBadge.textContent = labels[status] || "Source: " + (status || "-");
+    sourceStatusBadge.className = "template-badge " + (status === "built_in_default" ? "template-badge-warning" : status === "browser_draft" ? "template-badge-enabled" : "template-badge-neutral");
+    if (detail && templateSourceLine) templateSourceLine.textContent = detail;
+  }
+
+  function setBrowserDraftStatus(draft, loaded) {
+    if (!browserDraftBadge && !browserDraftStatusLine) return;
+    var text = "Browser draft: none";
+    var line = "";
+    if (draft) {
+      var promotedAt = currentSourcePayload?.sidecarProfileJson?.promotedAtUtc || "";
+      var newerThanProduction = promotedAt && Date.parse(draft.timestamp || "") > Date.parse(promotedAt);
+      text = loaded ? "Browser draft: loaded" : "Browser draft: available";
+      line = (loaded ? "Browser draft loaded. " : "Browser draft available. ") +
+        (newerThanProduction ? "Browser draft newer than production profile. " : "") +
+        "Use Clear Browser Draft or Reload From Production Template to discard it.";
+    }
+    if (browserDraftBadge) {
+      browserDraftBadge.textContent = text;
+      browserDraftBadge.className = "template-badge " + (draft ? "template-badge-enabled" : "template-badge-neutral");
+    }
+    if (browserDraftStatusLine) browserDraftStatusLine.textContent = line;
+  }
+
+  function readBrowserDraft() {
+    try {
+      var parsed = JSON.parse(localStorage.getItem(currentDraftKey()) || "null");
+      if (!parsed || parsed.templateName !== templateSelect.value || parsed.profileKey !== profileSelect.value) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveBrowserDraft(options) {
+    var opts = options || {};
+    try {
+      var draft = browserDraftPayload();
+      localStorage.setItem(currentDraftKey(), JSON.stringify(draft));
+      localStorage.setItem(LAST_CONTEXT_KEY, JSON.stringify({
+        templateName: draft.templateName,
+        profileKey: draft.profileKey,
+        timestamp: draft.timestamp
+      }));
+      setBrowserDraftStatus(draft, false);
+      if (!opts.silent) {
+        if (browserDraftStatusLine) browserDraftStatusLine.textContent = "Browser draft saved to this browser only. Production unchanged.";
+        setStatus(true, "Browser Draft Saved", "Browser draft saved to this browser only.");
+      }
+      return draft;
+    } catch (error) {
+      if (!opts.silent) setStatus(false, "Browser Draft Save Failed", error.message);
+      return null;
+    }
+  }
+
+  function clearBrowserDraft(options) {
+    var opts = options || {};
+    try {
+      localStorage.removeItem(currentDraftKey());
+      setBrowserDraftStatus(null, false);
+      if (!opts.silent) {
+        if (browserDraftStatusLine) browserDraftStatusLine.textContent = "Browser draft cleared. Reloading production template/profile source.";
+        setStatus(true, "Browser Draft Cleared", "The browser draft was removed; production files were not changed.");
+      }
+    } catch (error) {
+      if (!opts.silent) setStatus(false, "Browser Draft Clear Failed", error.message);
+    }
+  }
+
+  function applyBrowserDraft(draft) {
+    if (!draft) return false;
+    applySampleDataToControls(draft.sampleData || {});
+    applyProfileOverridesToControls(draft.profileOverrides || {});
+    selectedPreviewObjectId = draft.selectedObjectId || "";
+    if (Array.isArray(draft.activeAreaFilters) && draft.activeAreaFilters.length) {
+      activeAreaFilters = new Set(draft.activeAreaFilters);
+      activePreset = "custom";
+      collapseAllFilters = false;
+      applyAreaFilters();
+    }
+    exportProfileJson();
+    updateRenderState(false);
+    setSourceStatusBadge("browser_draft");
+    setBrowserDraftStatus(draft, true);
+    return true;
+  }
+
+  function maybeApplyBrowserDraft() {
+    var draft = readBrowserDraft();
+    if (!draft) {
+      setBrowserDraftStatus(null, false);
+      return false;
+    }
+    return applyBrowserDraft(draft);
+  }
+
+  async function loadTemplateSourceFromServer(options) {
+    var opts = options || {};
+    var query = new URLSearchParams({
+      templateName: templateSelect.value || "",
+      profileKey: profileSelect.value || ""
+    });
+    currentSourcePayload = await fetchJson("/api/print/template-lab/source?" + query.toString(), { cache: "no-store" });
+    currentTemplateGeometry = currentSourcePayload.parsedGeometry || null;
+    if (templateSourceLine) templateSourceLine.textContent = "Editing current production template: " + (currentSourcePayload.productionTemplatePath || "-");
+    if (templateGeometryWarnings) {
+      var warnings = currentSourcePayload.warnings || currentTemplateGeometry?.warnings || [];
+      templateGeometryWarnings.textContent = warnings.length ? "Source warnings: " + warnings.join(" | ") : "";
+    }
+    applyGeometryToControls(currentTemplateGeometry || {});
+    var sidecarOverrides = currentSourcePayload.hydrationProfileOverrides || currentSourcePayload.sidecarProfileJson?.hydrationProfileOverrides || currentSourcePayload.sidecarProfileJson?.profileOverrides || {};
+    if (Object.keys(sidecarOverrides || {}).length) applyProfileOverridesToControls(sidecarOverrides);
+    setSourceStatusBadge(currentSourcePayload.sourceStatus, "Editing current production template: " + (currentSourcePayload.productionTemplatePath || "-"));
+    setBrowserDraftStatus(readBrowserDraft(), false);
+    if (opts.allowDraft !== false) maybeApplyBrowserDraft();
+    exportProfileJson();
+    updateRenderState(false);
+    return currentSourcePayload;
+  }
+
   function buildQuickEditHandoff() {
     var payload = formPayload();
     return {
@@ -1341,6 +1528,7 @@
 
   function prepareQuickEditHandoff(event) {
     var target = event.currentTarget;
+    saveBrowserDraft({ silent: true });
     try {
       sessionStorage.setItem("templateQuickEditHandoff", JSON.stringify(buildQuickEditHandoff()));
     } catch {
@@ -1846,19 +2034,51 @@
     window.print();
   }
 
-  async function applyTemplateDefaults() {
+  function applyTemplateRfidRequirement() {
     var definition = selectedTemplateDefinition();
     if (!definition) return;
-    profileSelect.value = definition.defaultProfileKey || profileSelect.value;
-
     if (definition.requiresRfid) {
       input("rfid").disabled = false;
     } else {
       input("rfid").disabled = true;
       input("rfid").value = "";
     }
+  }
+
+  async function applyTemplateDefaults() {
+    var definition = selectedTemplateDefinition();
+    if (!definition) return;
+    profileSelect.value = definition.defaultProfileKey || profileSelect.value;
+    applyTemplateRfidRequirement();
 
     await loadSelectedProfileValues();
+  }
+
+  function restoreIncomingLabContext() {
+    var query = new URLSearchParams(window.location.search);
+    var context = null;
+    try {
+      context = JSON.parse(sessionStorage.getItem("templateLabReturnHandoff") || "null");
+    } catch {
+      context = null;
+    }
+    if (!context) {
+      try {
+        context = JSON.parse(localStorage.getItem(LAST_CONTEXT_KEY) || "null");
+      } catch {
+        context = null;
+      }
+    }
+    var templateName = query.get("template") || query.get("templateName") || context?.templateName || context?.template || "";
+    var profileKey = query.get("profileKey") || query.get("profile") || context?.profileKey || "";
+    if (templateName && Array.from(templateSelect.options || []).some(function (option) { return option.value === templateName; })) {
+      templateSelect.value = templateName;
+    }
+    if (profileKey && Array.from(profileSelect.options || []).some(function (option) { return option.value === profileKey; })) {
+      profileSelect.value = profileKey;
+    }
+    applyTemplateRfidRequirement();
+    return Boolean(templateName || profileKey);
   }
 
   async function loadCatalog() {
@@ -1870,7 +2090,9 @@
       return "<option value=\"" + profile.key + "\">" + profile.key + " - " + profile.template + "</option>";
     }).join("");
     await loadLogoAssets();
-    await applyTemplateDefaults();
+    var restoredContext = restoreIncomingLabContext();
+    if (restoredContext) await loadSelectedProfileValues();
+    else await applyTemplateDefaults();
     setStatus(true, "Template Lab Ready", "Tune controls, render, then proof print only when explicitly confirmed.");
   }
 
@@ -2147,6 +2369,21 @@
     }
   }
 
+  async function reloadFromProductionTemplate() {
+    try {
+      await loadTemplateSourceFromServer({ allowDraft: false });
+      setBrowserDraftStatus(readBrowserDraft(), false);
+      setStatus(true, "Production Source Reloaded", "Loaded current production template and sidecar profile; browser draft was not applied.");
+    } catch (error) {
+      setStatus(false, "Production Source Reload Failed", error.message);
+    }
+  }
+
+  async function clearBrowserDraftAndReload() {
+    clearBrowserDraft();
+    await reloadFromProductionTemplate();
+  }
+
   async function promoteDynamicTemplate() {
     exportProfileJson();
     var snapshot = snapshotOrBlock(promoteTemplateResult, "Promotion Blocked");
@@ -2170,17 +2407,24 @@
         promoteTemplateResult.textContent = [
           "Promoted " + result.updatedTemplatePath,
           "Backup: " + result.backupPath,
+          "Sidecar: " + (result.sidecarProfilePath || "-"),
+          "Sidecar backup: " + (result.backupSidecarPath || "none"),
           "RenderId: " + (result.renderId || snapshot.renderId || "-"),
           "Digest: " + (result.promotedDigest || result.digest || "-"),
+          "Sidecar digest: " + (result.reloadedSidecarDigest || result.sidecarDigest || "-"),
           "Payload: " + (result.payloadBytes || result.bytes || 0) + " bytes",
-          "Changed sections: " + ((result.changedProfileSections || []).join(", ") || "none")
+          "Changed sections: " + ((result.changedProfileSections || []).join(", ") || "none"),
+          "Promotion complete. Re-render from promoted production template before proof printing again."
         ].join(" | ");
       }
       lastPromoteAt = new Date().toISOString();
       currentRenderSnapshot.promotedAt = lastPromoteAt;
       currentRenderSnapshot.promoteResult = clonePlain(result);
+      latestRenderSignature = "";
+      await loadTemplateSourceFromServer({ allowDraft: false });
       updateRenderSnapshotDebug();
-      setStatus(true, "Dynamic Template Promoted", "Production source template was updated with dynamic tokens preserved.");
+      updateRenderState(false);
+      setStatus(true, "Dynamic Template Promoted", "Production template/profile promoted; re-render from the promoted production files before proof printing again.");
     } catch (error) {
       if (promoteTemplateResult) promoteTemplateResult.textContent = error.message;
       setStatus(false, "Promotion Failed", error.message);
@@ -2222,6 +2466,7 @@
       exportProfileJson();
       updateCalibrationSummary();
       updateRenderState(false);
+      saveBrowserDraft({ silent: true });
       var section = number.closest("[data-area-section]");
       var firstArea = String(section && section.getAttribute("data-area-section") || "").split(/\s+/).map(areaKeyToPreviewArea).find(Boolean);
       if (firstArea) highlightPreviewArea(firstArea);
@@ -2231,6 +2476,7 @@
       exportProfileJson();
       updateCalibrationSummary();
       updateRenderState(false);
+      saveBrowserDraft({ silent: true });
       var section = range.closest("[data-area-section]");
       var firstArea = String(section && section.getAttribute("data-area-section") || "").split(/\s+/).map(areaKeyToPreviewArea).find(Boolean);
       if (firstArea) highlightPreviewArea(firstArea);
@@ -2249,6 +2495,7 @@
         updateCalibrationSummary();
         updateSampleSummary();
         updateRenderState(false);
+        saveBrowserDraft({ silent: true });
         var section = element.closest("[data-area-section]");
         var firstArea = String(section && section.getAttribute("data-area-section") || "").split(/\s+/).map(areaKeyToPreviewArea).find(Boolean);
         if (firstArea) highlightPreviewArea(firstArea);
@@ -2318,12 +2565,14 @@
   if (printCalibrationButton) printCalibrationButton.addEventListener("click", printCalibrationGrid);
   if (printSettingsReportButton) printSettingsReportButton.addEventListener("click", printSettingsReport);
   loadProfileButton.addEventListener("click", loadSavedProfileOverrides);
-  if (reloadTemplateButton) reloadTemplateButton.addEventListener("click", loadSelectedProfileValues);
+  if (reloadTemplateButton) reloadTemplateButton.addEventListener("click", reloadFromProductionTemplate);
   if (compareTemplateButton) compareTemplateButton.addEventListener("click", compareCurrentVsStaged);
   if (compareProductionTemplateButton) compareProductionTemplateButton.addEventListener("click", compareCurrentRenderVsProductionTemplate);
   if (applyFieldBoostsButton) applyFieldBoostsButton.addEventListener("click", applyGroupedFieldAdjustments);
   if (openQuickEditTopButton) openQuickEditTopButton.addEventListener("click", prepareQuickEditHandoff);
   if (openQuickEditPreviewButton) openQuickEditPreviewButton.addEventListener("click", prepareQuickEditHandoff);
+  if (saveBrowserDraftButton) saveBrowserDraftButton.addEventListener("click", function () { saveBrowserDraft(); });
+  if (clearBrowserDraftButton) clearBrowserDraftButton.addEventListener("click", clearBrowserDraftAndReload);
   exportProfileButton.addEventListener("click", exportProfileJson);
   saveProfileButton.addEventListener("click", saveProfile);
   if (resetProfileButton) resetProfileButton.addEventListener("click", resetProfileDefaults);

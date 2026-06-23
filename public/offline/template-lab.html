@@ -104,6 +104,10 @@
           <div id="renderSnapshotDebug" class="snapshot-debug-grid"></div>
           <div id="sendResult" class="muted-line"></div>
         </div>
+        <div class="template-badge-row lab-source-row">
+          <span id="sourceStatusBadge" class="template-badge template-badge-neutral">Source: loading</span>
+          <span id="browserDraftBadge" class="template-badge template-badge-neutral">Browser draft: none</span>
+        </div>
       </section>
     </div>
 
@@ -289,12 +293,14 @@
 
           <details class="tuning-subsection lab-accordion" data-area-section="export-save" open>
             <summary>Export / Save Details</summary>
-            <p class="field-help">Export updates the JSON below. Save writes lab-only profile overrides to the configured Template Lab profile JSON. Saved lab profiles affect preview/test rendering only.</p>
+            <p class="field-help">Browser Draft saves unsaved work in this browser only. Save Lab Profile writes lab/test profile JSON to the configured Template Lab profile file; production remains unchanged. Promote writes the production template and production sidecar profile.</p>
             <textarea id="profileJson" class="profile-json" spellcheck="false"></textarea>
             <div id="profileSaveResult" class="muted-line"></div>
             <div class="actions">
+              <button id="saveBrowserDraftButton" class="secondary" type="button" title="Save current Template Lab controls to this browser only.">Save Browser Draft</button>
+              <button id="clearBrowserDraftButton" class="secondary" type="button" title="Discard the browser draft for this template/profile and reload production source values.">Clear Browser Draft</button>
               <button id="loadProfileButton" class="secondary" type="button">Load Saved Profile</button>
-              <button id="reloadTemplateButton" class="secondary" type="button">Reload From Current Template</button>
+              <button id="reloadTemplateButton" class="secondary" type="button">Reload From Production Template</button>
               <button id="compareTemplateButton" class="secondary" type="button">Compare Current vs Staged</button>
               <button id="compareProductionTemplateButton" class="secondary" type="button">Compare current render vs production template</button>
               <button id="copyProfileButton" class="secondary" type="button">Copy JSON</button>
@@ -303,6 +309,7 @@
             </div>
             <div id="promoteTemplateResult" class="muted-line"></div>
             <div id="templateCompareResult" class="muted-line"></div>
+            <div id="browserDraftStatusLine" class="muted-line"></div>
           </details>
         </section>
       </div>

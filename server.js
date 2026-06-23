@@ -4949,6 +4949,102 @@ function getTemplateLabTemplateGeometryPayload(input = {}) {
   };
 }
 
+function templateLabSidecarProfilePath(templatePath) {
+  const resolved = String(templatePath || "");
+  if (/\.template\.zpl$/i.test(resolved)) return resolved.replace(/\.template\.zpl$/i, ".template.profile.json");
+  return `${resolved}.profile.json`;
+}
+
+function readTemplateLabSidecarProfile(templatePath) {
+  const sidecarProfilePath = templateLabSidecarProfilePath(templatePath);
+  if (!fs.existsSync(sidecarProfilePath)) {
+    return {
+      sidecarProfilePath,
+      sidecarProfileJson: null,
+      sidecarDigest: "",
+      sidecarText: ""
+    };
+  }
+  const sidecarText = fs.readFileSync(sidecarProfilePath, "utf8");
+  const sidecarProfileJson = JSON.parse(sidecarText);
+  return {
+    sidecarProfilePath,
+    sidecarProfileJson,
+    sidecarDigest: sha256Hex(sidecarText),
+    sidecarText
+  };
+}
+
+function profileOverridesForProductionHydration(profileOverrides = {}) {
+  const hydrated = deepMergePlainObjects({}, profileOverrides);
+  delete hydrated.globalScaleX;
+  delete hydrated.globalScaleY;
+  delete hydrated.globalOffsetX;
+  delete hydrated.globalOffsetY;
+  delete hydrated.scaleX;
+  delete hydrated.scaleY;
+  delete hydrated.offsetX;
+  delete hydrated.offsetY;
+  return hydrated;
+}
+
+function getTemplateLabSourcePayload(input = {}) {
+  const selected = normalizeTemplateLabTemplateName(input.templateName || input.template || input.name);
+  const profileKey = trimString(input.profileKey || input.profile || selected.definition.defaultProfileKey).toUpperCase();
+  const productionTemplateZpl = loadZplTemplate(selected.templatePath);
+  const productionTemplateDigest = sha256Hex(productionTemplateZpl);
+  const parsedGeometry = parseTemplateLabSourceGeometry(productionTemplateZpl);
+  const sidecar = readTemplateLabSidecarProfile(selected.templatePath);
+  const sidecarOverrides = sidecar.sidecarProfileJson?.profileOverrides || sidecar.sidecarProfileJson?.overrides || {};
+  const sourceStatus = sidecar.sidecarProfileJson ? "production_with_sidecar" : "production_parsed";
+  const warnings = [];
+  if (!sidecar.sidecarProfileJson) warnings.push("No production sidecar profile found; parsed production template geometry is being used.");
+  if (!parsedGeometry.fields?.length) warnings.push("Production template parsed with no dynamic field geometry; built-in/default profile values may be needed for some controls.");
+
+  return {
+    ok: true,
+    templateName: selected.name,
+    profileKey,
+    productionTemplatePath: selected.templatePath,
+    productionTemplateZpl,
+    productionTemplateDigest,
+    productionTemplateSha256: productionTemplateDigest,
+    sidecarProfilePath: sidecar.sidecarProfilePath,
+    sidecarProfileJson: sidecar.sidecarProfileJson,
+    sidecarDigest: sidecar.sidecarDigest,
+    hydrationProfileOverrides: profileOverridesForProductionHydration(sidecarOverrides),
+    parsedGeometry,
+    sourceStatus,
+    warnings
+  };
+}
+
+function buildTemplateLabSidecarProfilePayload({ selected, profile, snapshot, profileOverrides, updatedTemplate, promotedDigest, renderedZplSha256, payloadBytes, promotedBytes, changedProfileSections }) {
+  const promotedAtUtc = isoNow();
+  const overrides = deepMergePlainObjects({}, profileOverrides || {});
+  return {
+    schemaVersion: 1,
+    source: "template_lab_promotion",
+    templateName: selected.name,
+    profileKey: profile.key,
+    productionTemplatePath: selected.templatePath,
+    promotedAtUtc,
+    renderId: trimString(snapshot.renderId),
+    templateDigest: promotedDigest,
+    dynamicTemplateSha256: promotedDigest,
+    renderedZplSha256: trimString(renderedZplSha256),
+    payloadBytes,
+    promotedBytes,
+    changedProfileSections,
+    profileOverrides: overrides,
+    hydrationProfileOverrides: profileOverridesForProductionHydration(overrides),
+    elementMap: Array.isArray(snapshot.elementMap) ? snapshot.elementMap : [],
+    geometryMap: Array.isArray(snapshot.geometryMap) ? snapshot.geometryMap : [],
+    metadata: isPlainObject(snapshot.metadata) ? snapshot.metadata : {},
+    note: "Production Template Lab sidecar. Used to hydrate Template Lab/Quick Edit controls; production printing still reads the .template.zpl source."
+  };
+}
+
 function buildTemplateLabData(input = {}, templateDefinition = {}) {
   const lotNumber = trimString(input.lotNumber) || "PT000086";
   const boxNumber = trimString(input.boxNumber || input.box || input.firstBox) || "52";
@@ -6019,13 +6115,54 @@ function promoteTemplateLabDynamicTemplate(body = {}) {
     });
   }
 
+  const changedProfileSections = collectChangedTemplateLabSections(inlineOverrides);
+  const payloadBytes = Number(snapshot.renderedPayloadBytes || snapshot.payloadBytes) || Buffer.byteLength(updatedTemplate, "utf8");
+  const promotedBytes = Buffer.byteLength(updatedTemplate, "utf8");
+  const renderId = trimString(snapshot.renderId);
+  const sidecarProfilePath = templateLabSidecarProfilePath(selected.templatePath);
+  const sidecarPayload = buildTemplateLabSidecarProfilePayload({
+    selected,
+    profile,
+    snapshot,
+    profileOverrides: snapshot.fullProfileOverrides || snapshot.profileOverrides || inlineOverrides,
+    updatedTemplate,
+    promotedDigest,
+    renderedZplSha256: snapshot.renderedZplSha256,
+    payloadBytes,
+    promotedBytes,
+    changedProfileSections
+  });
+  const sidecarText = `${JSON.stringify(sidecarPayload, null, 2)}\n`;
+  JSON.parse(sidecarText);
+
   fs.mkdirSync(path.dirname(selected.templatePath), { recursive: true });
-  const backupPath = `${selected.templatePath}.bak-${formatTemplateBackupTimestamp()}`;
+  const backupTimestamp = formatTemplateBackupTimestamp();
+  const backupPath = `${selected.templatePath}.bak-${backupTimestamp}`;
+  const backupSidecarPath = fs.existsSync(sidecarProfilePath) ? `${sidecarProfilePath}.bak-${backupTimestamp}` : "";
   const tempWritePath = `${selected.templatePath}.tmp-${process.pid}-${Date.now()}`;
+  const tempSidecarPath = `${sidecarProfilePath}.tmp-${process.pid}-${Date.now()}`;
   fs.copyFileSync(selected.templatePath, backupPath);
+  if (backupSidecarPath) fs.copyFileSync(sidecarProfilePath, backupSidecarPath);
   fs.writeFileSync(tempWritePath, updatedTemplate, "utf8");
+  fs.writeFileSync(tempSidecarPath, sidecarText, "utf8");
+  if (fs.readFileSync(tempWritePath, "utf8") !== updatedTemplate) {
+    throw httpError(500, "PROMOTED_TEMPLATE_TEMP_VERIFY_FAILED", "Promotion failed because the staged template did not match the verified output.", {
+      template: selected.name,
+      templatePath: selected.templatePath,
+      backupPath
+    });
+  }
+  if (fs.readFileSync(tempSidecarPath, "utf8") !== sidecarText) {
+    throw httpError(500, "PROMOTED_SIDECAR_TEMP_VERIFY_FAILED", "Promotion failed because the staged sidecar profile did not match the verified output.", {
+      template: selected.name,
+      sidecarProfilePath,
+      backupSidecarPath
+    });
+  }
   fs.renameSync(tempWritePath, selected.templatePath);
+  fs.renameSync(tempSidecarPath, sidecarProfilePath);
   const writtenTemplate = fs.readFileSync(selected.templatePath, "utf8");
+  const writtenSidecar = fs.readFileSync(sidecarProfilePath, "utf8");
   if (writtenTemplate !== updatedTemplate) {
     throw httpError(500, "PROMOTED_TEMPLATE_WRITE_VERIFY_FAILED", "Promotion failed because the written template did not match the verified output.", {
       template: selected.name,
@@ -6033,18 +6170,28 @@ function promoteTemplateLabDynamicTemplate(body = {}) {
       backupPath
     });
   }
-  const changedProfileSections = collectChangedTemplateLabSections(inlineOverrides);
-  const payloadBytes = Number(snapshot.renderedPayloadBytes || snapshot.payloadBytes) || Buffer.byteLength(updatedTemplate, "utf8");
-  const promotedBytes = Buffer.byteLength(updatedTemplate, "utf8");
-  const renderId = trimString(snapshot.renderId);
+  if (writtenSidecar !== sidecarText) {
+    throw httpError(500, "PROMOTED_SIDECAR_WRITE_VERIFY_FAILED", "Promotion failed because the written sidecar profile did not match the verified output.", {
+      template: selected.name,
+      sidecarProfilePath,
+      backupSidecarPath
+    });
+  }
+  const reloadedTemplateDigest = sha256Hex(writtenTemplate);
+  const reloadedSidecarDigest = sha256Hex(writtenSidecar);
+  const sourceAfterPromote = getTemplateLabSourcePayload({ templateName: selected.name, profileKey: profile.key });
 
   logInfo("template_lab_dynamic_template_promoted", {
     template: selected.name,
     profileKey: profile.key,
     templatePath: selected.templatePath,
     backupPath,
+    sidecarProfilePath,
+    backupSidecarPath,
     renderId,
     promotedDigest,
+    reloadedTemplateDigest,
+    reloadedSidecarDigest,
     tokenCountBefore: tokensBefore.length,
     tokenCountAfter: remainingTokens.length,
     payloadBytes,
@@ -6061,9 +6208,17 @@ function promoteTemplateLabDynamicTemplate(body = {}) {
     templatePath: selected.templatePath,
     updatedTemplatePath: selected.templatePath,
     backupPath,
+    productionTemplatePath: selected.templatePath,
+    sidecarProfilePath,
+    backupTemplatePath: backupPath,
+    backupSidecarPath,
     digest: promotedDigest,
     promotedDigest,
     dynamicTemplateSha256: promotedDigest,
+    sidecarDigest: sha256Hex(sidecarText),
+    reloadedTemplateDigest,
+    reloadedSidecarDigest,
+    sourceStatus: sourceAfterPromote.sourceStatus,
     tokenCount: remainingTokens.length,
     tokenCountBefore: tokensBefore.length,
     tokenCountAfter: remainingTokens.length,
@@ -6077,9 +6232,13 @@ function promoteTemplateLabDynamicTemplate(body = {}) {
       unreplacedTokens: [],
       rfidCommandsUnchanged: true,
       qrPayloadLotNumberOnly: sourceQr === "{{lotNumber}}",
-      productionTemplateFileModified: true
+      productionTemplateFileModified: true,
+      productionSidecarFileModified: true,
+      reloadedTemplateDigestMatches: reloadedTemplateDigest === promotedDigest,
+      reloadedSidecarDigestMatches: reloadedSidecarDigest === sha256Hex(sidecarText)
     },
-    message: "Dynamic template promoted to production source. Rendered proof ZPL was not saved."
+    sourceAfterPromote,
+    message: "Dynamic template and production sidecar profile promoted. Rendered proof ZPL was not saved."
   };
 }
 
@@ -8397,6 +8556,15 @@ app.get("/api/print/template-lab/template-geometry", requireOfflineLocalAccess, 
     return res.json(getTemplateLabTemplateGeometryPayload(req.query || {}));
   } catch (error) {
     return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_LAB_GEOMETRY_ERROR", message: error.message, details: error.details || undefined });
+  }
+});
+
+app.get("/api/print/template-lab/source", requireOfflineLocalAccess, (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(getTemplateLabSourcePayload(req.query || {}));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ ok: false, error: error.code || "TEMPLATE_LAB_SOURCE_ERROR", message: error.message, details: error.details || undefined });
   }
 });
 

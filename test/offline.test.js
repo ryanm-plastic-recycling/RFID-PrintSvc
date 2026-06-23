@@ -429,7 +429,7 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.text.includes("Bottom Grid / Footer Row"), true);
   assert.equal(result.text.includes("Reset Sample Data"), true);
   assert.equal(result.text.includes("Compare Current vs Staged"), true);
-  assert.equal(result.text.includes("Reload From Current Template"), true);
+  assert.equal(result.text.includes("Reload From Production Template"), true);
   assert.equal(result.text.includes("Scale border thickness with label scale"), true);
   assert.equal(result.text.includes("Reset station profile to template defaults"), true);
   assert.equal(result.text.includes("Print Calibration Grid"), true);
@@ -476,6 +476,11 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.text.includes("Open Quick Edit"), true);
   assert.equal(result.text.includes("openQuickEditTopButton"), true);
   assert.equal(result.text.includes("openQuickEditPreviewButton"), true);
+  assert.equal(result.text.includes("Save Browser Draft"), true);
+  assert.equal(result.text.includes("Clear Browser Draft"), true);
+  assert.equal(result.text.includes("Reload From Production Template"), true);
+  assert.equal(result.text.includes("sourceStatusBadge"), true);
+  assert.equal(result.text.includes("browserDraftBadge"), true);
 
   result = await request("GET", "/offline/template-quick-edit");
   assert.equal(result.status, 200);
@@ -488,6 +493,9 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.text.includes("qeRenderButton"), true);
   assert.equal(result.text.includes("qeConfirmProof"), true);
   assert.equal(result.text.includes("qeSendProofButton"), true);
+  assert.equal(result.text.includes("qeSaveBrowserDraftButton"), true);
+  assert.equal(result.text.includes("qeClearBrowserDraftButton"), true);
+  assert.equal(result.text.includes("qeReloadProductionButton"), true);
   assert.equal(result.text.includes("qeSaveProfileButton"), true);
   assert.equal(result.text.includes("qeExportProfileButton"), true);
   assert.equal(result.text.includes("qePreviewFrame"), true);
@@ -504,6 +512,8 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.text.includes("<option value=\"0.5\">50%</option>"), true);
   assert.equal(result.text.includes("<option value=\"0.75\">75%</option>"), true);
   assert.equal(result.text.includes("qeZoomStatus"), true);
+  assert.equal(result.text.includes("qeSourceStatusBadge"), true);
+  assert.equal(result.text.includes("qeBrowserDraftBadge"), true);
   assert.equal(result.text.includes("200%"), true);
   assert.equal(result.text.includes("Edit Sample Data"), true);
   assert.equal(result.text.includes("PT000086"), true);
@@ -520,6 +530,14 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(templateLabScript.includes("templateQuickEditHandoff"), true);
   assert.equal(templateLabScript.includes("buildQuickEditHandoff"), true);
   assert.equal(templateLabScript.includes("/offline/template-quick-edit?"), true);
+  assert.equal(templateLabScript.includes("BROWSER_DRAFT_KEY_PREFIX = \"priTemplateLabDraft\""), true);
+  assert.equal(templateLabScript.includes("LAST_CONTEXT_KEY = \"priTemplateLabLastContext\""), true);
+  assert.equal(templateLabScript.includes("saveBrowserDraft"), true);
+  assert.equal(templateLabScript.includes("readBrowserDraft"), true);
+  assert.equal(templateLabScript.includes("applyBrowserDraft"), true);
+  assert.equal(templateLabScript.includes("loadTemplateSourceFromServer"), true);
+  assert.equal(templateLabScript.includes("/api/print/template-lab/source?"), true);
+  assert.equal(templateLabScript.includes("Production Template + Sidecar Profile"), true);
   assert.equal(quickEditScript.includes("DEFAULT_TEMPLATES"), true);
   assert.equal(quickEditScript.includes("RFID-RAW-P1.template.zpl"), true);
   assert.equal(quickEditScript.includes("RFID-FG-P3.template.zpl"), true);
@@ -550,6 +568,13 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(quickEditScript.includes("Template Lab profile"), false);
   assert.equal(quickEditScript.includes("templateQuickEditHandoff"), true);
   assert.equal(quickEditScript.includes("templateLabReturnHandoff"), true);
+  assert.equal(quickEditScript.includes("BROWSER_DRAFT_KEY_PREFIX = \"priTemplateLabDraft\""), true);
+  assert.equal(quickEditScript.includes("LAST_CONTEXT_KEY = \"priTemplateLabLastContext\""), true);
+  assert.equal(quickEditScript.includes("saveBrowserDraft"), true);
+  assert.equal(quickEditScript.includes("readBrowserDraft"), true);
+  assert.equal(quickEditScript.includes("applyBrowserDraft"), true);
+  assert.equal(quickEditScript.includes("loadProductionSource"), true);
+  assert.equal(quickEditScript.includes("/api/print/template-lab/source?"), true);
   assert.equal(quickEditScript.includes("buildPrintReport"), true);
   assert.equal(quickEditScript.includes("quickEditPrintReportBody"), true);
   assert.equal(quickEditScript.includes("QUICK_EDIT_ZOOM_STORAGE_KEY = \"templateQuickEditPreviewZoom\""), true);
@@ -615,9 +640,10 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(offlineCss.includes(".template-lab-topbar"), true);
   assert.equal(offlineCss.includes(".template-lab-body"), true);
   assert.equal(offlineCss.includes(".template-lab-controls-scroll"), true);
-  assert.equal(offlineCss.includes("height: var(--template-lab-body-height)"), true);
-  assert.equal(offlineCss.includes("overflow-y: auto"), true);
-  assert.equal(offlineCss.includes("overflow-x: hidden"), true);
+  assert.match(offlineCss, /\.template-lab-body[\s\S]*?height: auto;/);
+  assert.match(offlineCss, /\.template-lab-controls-scroll[\s\S]*?overflow: visible;/);
+  assert.match(offlineCss, /\.template-lab-controls-scroll[\s\S]*?overscroll-behavior: auto;/);
+  assert.equal(offlineCss.includes("--template-lab-body-height"), false);
   assert.equal(offlineCss.includes("padding-right: calc(var(--template-lab-preview-width) + 20px)"), true);
   assert.equal(offlineCss.includes("grid-template-columns: minmax(0, 1fr)"), true);
   assert.equal(offlineCss.includes(".render-details-panel"), true);
@@ -681,6 +707,17 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.ok(result.json.bottomGrid.y >= 980);
   assert.ok(result.json.bottomGrid.height >= 100);
   assert.ok(Array.isArray(result.json.borders));
+
+  result = await request("GET", "/api/print/template-lab/source?templateName=RFID-RAW-P5.template.zpl&profileKey=P5:RAW");
+  assert.equal(result.status, 200);
+  assert.equal(result.json.templateName, "RFID-RAW-P5.template.zpl");
+  assert.equal(result.json.productionTemplatePath, zplTemplatePath("RFID-RAW-P5.template.zpl"));
+  assert.equal(typeof result.json.productionTemplateZpl, "string");
+  assert.equal(result.json.productionTemplateDigest.length, 64);
+  assert.equal(result.json.sidecarProfilePath.endsWith("RFID-RAW-P5.template.profile.json"), true);
+  assert.equal(result.json.sidecarProfileJson, null);
+  assert.equal(result.json.sourceStatus, "production_parsed");
+  assert.equal(result.json.parsedGeometry.fields.some((field) => field.tokenName === "lotNumber"), true);
 
   const parserTemplatePath = zplTemplatePath("RFID-RAW-P5.template.zpl");
   const parserOriginal = fs.readFileSync(parserTemplatePath, "utf8");
@@ -885,7 +922,9 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.json.renderedZpl.includes("Template Lab Bottom Grid/Footer Row hidden"), true);
 
   const profileSaveTemplatePath = zplTemplatePath("RFID-RAW-P1.template.zpl");
+  const profileSaveSidecarPath = zplTemplatePath("RFID-RAW-P1.template.profile.json");
   const profileSaveTemplateBefore = fs.readFileSync(profileSaveTemplatePath, "utf8");
+  const profileSaveSidecarBefore = fs.existsSync(profileSaveSidecarPath) ? fs.readFileSync(profileSaveSidecarPath, "utf8") : null;
   const profileSaveQueueCountBefore = fs.existsSync(queueDir) ? fs.readdirSync(queueDir).length : 0;
   result = await request("POST", "/api/print/template-lab/profile", {
     body: {
@@ -904,6 +943,8 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.json.productionUnchanged, true);
   assert.equal(fs.existsSync(path.join(tempDir, "template-lab-profiles.json")), true);
   assert.equal(fs.readFileSync(profileSaveTemplatePath, "utf8"), profileSaveTemplateBefore);
+  assert.equal(fs.existsSync(profileSaveSidecarPath), profileSaveSidecarBefore !== null);
+  if (profileSaveSidecarBefore !== null) assert.equal(fs.readFileSync(profileSaveSidecarPath, "utf8"), profileSaveSidecarBefore);
   assert.equal(fs.existsSync(queueDir) ? fs.readdirSync(queueDir).length : 0, profileSaveQueueCountBefore);
 
   result = await request("GET", "/api/print/template-lab/catalog");
@@ -958,6 +999,8 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.json.error, "DYNAMIC_TEMPLATE_REQUIRED");
 
   const promoteTemplatePath = zplTemplatePath("RFID-RAW-P1.template.zpl");
+  const promoteSidecarPath = zplTemplatePath("RFID-RAW-P1.template.profile.json");
+  fs.writeFileSync(promoteSidecarPath, JSON.stringify({ existing: true, templateName: "RFID-RAW-P1.template.zpl" }, null, 2), "utf8");
   const promoteOverrides = {
     qr: { x: 130, y: 240, magnification: 9 },
     fieldGeometryOverrides: {
@@ -990,9 +1033,15 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(result.status, 200);
   assert.equal(result.json.ok, true);
   assert.equal(result.json.templatePath, promoteTemplatePath);
+  assert.equal(result.json.sidecarProfilePath, promoteSidecarPath);
   assert.equal(fs.existsSync(result.json.backupPath), true);
+  assert.equal(fs.existsSync(result.json.backupSidecarPath), true);
+  assert.equal(JSON.parse(fs.readFileSync(result.json.backupSidecarPath, "utf8")).existing, true);
   assert.equal(result.json.renderId, promotePreview.json.renderId);
   assert.equal(result.json.promotedDigest, promotePreview.json.dynamicTemplateSha256);
+  assert.equal(result.json.reloadedTemplateDigest, promotePreview.json.dynamicTemplateSha256);
+  assert.equal(result.json.reloadedSidecarDigest.length, 64);
+  assert.equal(result.json.sourceStatus, "production_with_sidecar");
   assert.equal(result.json.payloadBytes, promotePreview.json.payloadBytes);
   assert.equal(result.json.changedProfileSections.includes("qr"), true);
   assert.equal(result.json.changedProfileSections.includes("fieldGeometry"), true);
@@ -1007,6 +1056,23 @@ test("template lab page, preview, and test send stay outside production queue", 
   assert.equal(promotedSource.includes("^FT100,326\n^A0N,111,145^FD{{lotNumber}}^FS"), true);
   assert.equal(promotedSource.includes("TEMPLATE_LAB_FIELD_FIT_DEFINITIONS_BASE64:"), true);
   assert.equal(promotedSource.includes("^FB{{colorBoxW}},{{colorMaxLines}},0,{{colorAlignment}},0^FD{{colorText}}"), true);
+  const promotedSidecar = JSON.parse(fs.readFileSync(promoteSidecarPath, "utf8"));
+  assert.equal(promotedSidecar.templateName, "RFID-RAW-P1.template.zpl");
+  assert.equal(promotedSidecar.profileKey, "P1:RAW");
+  assert.equal(promotedSidecar.renderId, promotePreview.json.renderId);
+  assert.equal(promotedSidecar.dynamicTemplateSha256, promotePreview.json.dynamicTemplateSha256);
+  assert.equal(promotedSidecar.profileOverrides.qr.x, 130);
+  assert.equal(promotedSidecar.profileOverrides.fieldGeometryOverrides.lotNumber.x, 100);
+
+  result = await request("GET", "/api/print/template-lab/source?templateName=RFID-RAW-P1.template.zpl&profileKey=P1:RAW");
+  assert.equal(result.status, 200);
+  assert.equal(result.json.sourceStatus, "production_with_sidecar");
+  assert.equal(result.json.sidecarProfilePath, promoteSidecarPath);
+  assert.equal(result.json.sidecarDigest, result.json.reloadedSidecarDigest || result.json.sidecarDigest);
+  assert.equal(result.json.sidecarProfileJson.renderId, promotePreview.json.renderId);
+  assert.equal(result.json.sidecarProfileJson.profileOverrides.qr.x, 130);
+  assert.equal(result.json.hydrationProfileOverrides.qr.x, 130);
+  assert.equal(result.json.hydrationProfileOverrides.globalScaleX, undefined);
 
   let snapshotProofCount = 0;
   serverModule.setTemplateTestSendFunction(async ({ zpl }) => {

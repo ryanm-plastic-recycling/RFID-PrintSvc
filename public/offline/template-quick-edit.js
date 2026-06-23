@@ -1,5 +1,7 @@
 (function () {
   var QUICK_EDIT_ZOOM_STORAGE_KEY = "templateQuickEditPreviewZoom";
+  var BROWSER_DRAFT_KEY_PREFIX = "priTemplateLabDraft";
+  var LAST_CONTEXT_KEY = "priTemplateLabLastContext";
   var DEFAULT_TEMPLATE = "RFID-RAW-P1.template.zpl";
   var DEFAULT_PROFILE = "P1:RAW";
   var DEFAULT_TEMPLATES = [
@@ -84,6 +86,7 @@
   var catalog = { templates: [], profiles: [] };
   var latestPreview = null;
   var currentRenderSnapshot = null;
+  var currentSourcePayload = null;
   var latestRenderSignature = "";
   var selectedObjectId = "";
   var dirty = false;
@@ -99,6 +102,9 @@
   var renderButton = $("qeRenderButton");
   var sendProofButton = $("qeSendProofButton");
   var confirmProof = $("qeConfirmProof");
+  var saveBrowserDraftButton = $("qeSaveBrowserDraftButton");
+  var clearBrowserDraftButton = $("qeClearBrowserDraftButton");
+  var reloadProductionButton = $("qeReloadProductionButton");
   var saveProfileButton = $("qeSaveProfileButton");
   var exportProfileButton = $("qeExportProfileButton");
   var printReportButton = $("qePrintReportButton");
@@ -114,6 +120,8 @@
   var previewModeBadge = $("qePreviewModeBadge");
   var renderStateBadge = $("qeRenderStateBadge");
   var lastRenderBadge = $("qeLastRenderBadge");
+  var sourceStatusBadge = $("qeSourceStatusBadge");
+  var browserDraftBadge = $("qeBrowserDraftBadge");
   var previewFrame = $("qePreviewFrame");
   var previewSvgHost = $("qePreviewSvgHost");
   var previewImage = $("qePreviewImage");
@@ -336,6 +344,151 @@
     };
   }
 
+  function browserDraftKey(templateName, profileKey) {
+    return BROWSER_DRAFT_KEY_PREFIX + ":" + encodeURIComponent(templateName || "") + ":" + encodeURIComponent(profileKey || "");
+  }
+
+  function currentDraftKey() {
+    return browserDraftKey(templateSelect.value || DEFAULT_TEMPLATE, profileSelect.value || DEFAULT_PROFILE);
+  }
+
+  function browserDraftPayload() {
+    return {
+      templateName: templateSelect.value || DEFAULT_TEMPLATE,
+      template: templateSelect.value || DEFAULT_TEMPLATE,
+      profileKey: profileSelect.value || DEFAULT_PROFILE,
+      sampleData: sampleData(),
+      profileOverrides: collectProfileOverrides(),
+      selectedObjectId: selectedObjectId || "",
+      selectedArea: areaForItem(previewObjectById(selectedObjectId)) || "",
+      zoomMode: zoomSelect ? zoomSelect.value : "fit",
+      timestamp: new Date().toISOString(),
+      dirty: dirty,
+      stale: isStale()
+    };
+  }
+
+  function setSourceStatusBadge(status) {
+    if (!sourceStatusBadge) return;
+    var labels = {
+      production_with_sidecar: "Source: Production Template + Sidecar Profile",
+      production_parsed: "Source: Parsed Production Template",
+      missing_sidecar: "Source: Parsed Production Template",
+      built_in_default: "Source: Built-in Defaults",
+      browser_draft: "Source: Browser Draft"
+    };
+    sourceStatusBadge.textContent = labels[status] || "Source: " + (status || "-");
+    sourceStatusBadge.className = "template-badge " + (status === "built_in_default" ? "template-badge-warning" : status === "browser_draft" ? "template-badge-enabled" : "template-badge-neutral");
+  }
+
+  function setBrowserDraftBadge(draft, loaded) {
+    if (!browserDraftBadge) return;
+    var text = "Browser draft: none";
+    if (draft) {
+      var promotedAt = currentSourcePayload?.sidecarProfileJson?.promotedAtUtc || "";
+      var newerThanProduction = promotedAt && Date.parse(draft.timestamp || "") > Date.parse(promotedAt);
+      text = (loaded ? "Browser draft: loaded" : "Browser draft: available") + (newerThanProduction ? " newer than production" : "");
+    }
+    browserDraftBadge.textContent = text;
+    browserDraftBadge.className = "template-badge " + (draft ? "template-badge-enabled" : "template-badge-neutral");
+  }
+
+  function readBrowserDraft() {
+    try {
+      var parsed = JSON.parse(localStorage.getItem(currentDraftKey()) || "null");
+      if (!parsed || parsed.templateName !== templateSelect.value || parsed.profileKey !== profileSelect.value) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveBrowserDraft(options) {
+    var opts = options || {};
+    try {
+      var draft = browserDraftPayload();
+      localStorage.setItem(currentDraftKey(), JSON.stringify(draft));
+      localStorage.setItem(LAST_CONTEXT_KEY, JSON.stringify({
+        templateName: draft.templateName,
+        profileKey: draft.profileKey,
+        timestamp: draft.timestamp
+      }));
+      setBrowserDraftBadge(draft, false);
+      if (!opts.silent) {
+        saveResult.textContent = "Browser draft saved to this browser only. Production unchanged.";
+        setStatus(true, "Browser Draft Saved", "Browser draft saved to this browser only.");
+      }
+      return draft;
+    } catch (error) {
+      if (!opts.silent) setStatus(false, "Browser Draft Save Failed", error.message);
+      return null;
+    }
+  }
+
+  function clearBrowserDraft(options) {
+    var opts = options || {};
+    try {
+      localStorage.removeItem(currentDraftKey());
+      setBrowserDraftBadge(null, false);
+      if (!opts.silent) {
+        saveResult.textContent = "Browser draft cleared. Production template/profile source will be loaded.";
+        setStatus(true, "Browser Draft Cleared", "The browser draft was removed; production files were not changed.");
+      }
+    } catch (error) {
+      if (!opts.silent) setStatus(false, "Browser Draft Clear Failed", error.message);
+    }
+  }
+
+  function applyBrowserDraft(draft) {
+    if (!draft) return false;
+    applyHandoff(draft);
+    if (draft.zoomMode && zoomSelect && Array.from(zoomSelect.options || []).some(function (option) { return option.value === draft.zoomMode; })) {
+      zoomSelect.value = draft.zoomMode;
+      persistZoomPreference();
+      applyZoom();
+    }
+    selectedObjectId = draft.selectedObjectId || "";
+    setSourceStatusBadge("browser_draft");
+    setBrowserDraftBadge(draft, true);
+    renderProfileJson();
+    dirty = Boolean(draft.dirty || draft.stale);
+    renderBadges();
+    return true;
+  }
+
+  async function loadProductionSource(options) {
+    var opts = options || {};
+    var query = new URLSearchParams({
+      templateName: templateSelect.value || DEFAULT_TEMPLATE,
+      profileKey: profileSelect.value || DEFAULT_PROFILE
+    });
+    currentSourcePayload = await fetchJson("/api/print/template-lab/source?" + query.toString(), { cache: "no-store" });
+    var sourceOverrides = currentSourcePayload.hydrationProfileOverrides || currentSourcePayload.sidecarProfileJson?.hydrationProfileOverrides || currentSourcePayload.sidecarProfileJson?.profileOverrides || {};
+    profileOverrides = clonePlain(sourceOverrides || {});
+    profileOverrides.borderVisibility = profileOverrides.borderVisibility || {};
+    setSourceStatusBadge(currentSourcePayload.sourceStatus);
+    setBrowserDraftBadge(readBrowserDraft(), false);
+    if (opts.allowDraft !== false) applyBrowserDraft(readBrowserDraft());
+    renderProfileJson();
+    renderBadges();
+    return currentSourcePayload;
+  }
+
+  async function reloadProductionSource() {
+    try {
+      await loadProductionSource({ allowDraft: false });
+      dirty = false;
+      setStatus(true, "Production Source Reloaded", "Loaded current production template and sidecar profile; browser draft was not applied.");
+    } catch (error) {
+      setStatus(false, "Production Source Reload Failed", error.message);
+    }
+  }
+
+  async function clearBrowserDraftAndReload() {
+    clearBrowserDraft();
+    await reloadProductionSource();
+  }
+
   function currentRenderSignature() {
     return JSON.stringify({
       template: templateSelect.value || DEFAULT_TEMPLATE,
@@ -389,6 +542,7 @@
     renderBadges();
     if (previewStatus && staleMessage) previewStatus.textContent = staleMessage;
     renderProfileJson();
+    saveBrowserDraft({ silent: true });
   }
 
   function renderProfileJson() {
@@ -1059,20 +1213,32 @@
       handoff = null;
     }
     if (handoff) applyHandoff(handoff);
+    if (!handoff) {
+      try {
+        var lastContext = JSON.parse(localStorage.getItem(LAST_CONTEXT_KEY) || "null");
+        if (lastContext?.templateName && hasOption(templateSelect, lastContext.templateName)) templateSelect.value = lastContext.templateName;
+        if (lastContext?.profileKey && hasOption(profileSelect, cleanProfileKey(lastContext.profileKey))) profileSelect.value = cleanProfileKey(lastContext.profileKey);
+      } catch {
+        // Last context is best-effort only.
+      }
+    }
     if (query.get("template") && hasOption(templateSelect, query.get("template"))) templateSelect.value = query.get("template");
     if (query.get("profileKey") && hasOption(profileSelect, cleanProfileKey(query.get("profileKey")))) profileSelect.value = cleanProfileKey(query.get("profileKey"));
     if (query.get("profile") && hasOption(profileSelect, cleanProfileKey(query.get("profile")))) profileSelect.value = cleanProfileKey(query.get("profile"));
   }
 
   function saveReturnHandoff() {
+    var draft = saveBrowserDraft({ silent: true });
     try {
       sessionStorage.setItem("templateLabReturnHandoff", JSON.stringify({
         template: templateSelect.value,
+        templateName: templateSelect.value,
         profileKey: profileSelect.value,
         sampleData: sampleData(),
         profileOverrides: collectProfileOverrides(),
         printerIp: printerIpInput.value,
-        printerPort: printerPortInput.value
+        printerPort: printerPortInput.value,
+        timestamp: draft?.timestamp || new Date().toISOString()
       }));
     } catch {
       // Best-effort handoff only.
@@ -1158,6 +1324,7 @@
     profileSelect.value = hasOption(profileSelect, DEFAULT_PROFILE) ? DEFAULT_PROFILE : profileSelect.options[0]?.value || DEFAULT_PROFILE;
     readStartupHandoff();
     if (!printerIpInput.value || !printerPortInput.value) applyPrinterDefaults();
+    await loadProductionSource({ allowDraft: true });
     updateSampleSummary();
     renderProfileJson();
     renderBadges();
@@ -1173,15 +1340,17 @@
       buildPrintReport();
       window.print();
     });
-    templateSelect.addEventListener("change", function () {
+    templateSelect.addEventListener("change", async function () {
       applyTemplateDefaultProfile();
       applyPrinterDefaults();
       updateSampleSummary();
+      await loadProductionSource({ allowDraft: true });
       setDirty("Template changed. Render/Re-render before proof printing.");
     });
-    profileSelect.addEventListener("change", function () {
+    profileSelect.addEventListener("change", async function () {
       applyPrinterDefaults();
       updateSampleSummary();
+      await loadProductionSource({ allowDraft: true });
       setDirty("Profile changed. Render/Re-render before proof printing.");
     });
     [printerIpInput, printerPortInput].forEach(function (element) {
@@ -1197,6 +1366,7 @@
       zoomSelect.addEventListener("change", function () {
         persistZoomPreference();
         applyZoom();
+        saveBrowserDraft({ silent: true });
       });
     }
     window.addEventListener("resize", applyZoom, { passive: true });
@@ -1233,6 +1403,9 @@
     });
     resetSelectedButton.addEventListener("click", resetSelectedObject);
     showInFullLabButton.addEventListener("click", showInFullLab);
+    if (saveBrowserDraftButton) saveBrowserDraftButton.addEventListener("click", function () { saveBrowserDraft(); });
+    if (clearBrowserDraftButton) clearBrowserDraftButton.addEventListener("click", clearBrowserDraftAndReload);
+    if (reloadProductionButton) reloadProductionButton.addEventListener("click", reloadProductionSource);
     backToLabButton.addEventListener("click", function (event) {
       event.preventDefault();
       requestExit(backToLabButton.href);
